@@ -2,6 +2,9 @@ package io.velocitybridge.probe;
 
 import io.velocitybridge.config.VelocityBridgeConfig;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.Closeable;
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -21,6 +24,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * キャッシュに保持する。計測失敗（到達不能）は {@link #UNREACHABLE}（-1）として保持する。</p>
  */
 public final class LatencyProbe implements Closeable {
+
+    private static final Logger logger = LoggerFactory.getLogger(LatencyProbe.class);
 
     /** 未計測・到達不能を表す値。 */
     public static final long UNREACHABLE = -1L;
@@ -65,6 +70,8 @@ public final class LatencyProbe implements Closeable {
                 long rtt = UNREACHABLE;
                 try {
                     rtt = MinecraftStatusPing.measureRtt(parseAddress(proxy.address()), timeoutMs);
+                } catch (IllegalArgumentException e) {
+                    logger.warn("Skipping proxy {}: {}", proxy.id(), e.getMessage());
                 } catch (IOException ignored) {
                     // 到達不能として扱う
                 }
@@ -85,7 +92,14 @@ public final class LatencyProbe implements Closeable {
 
     private static InetSocketAddress parseAddress(String address) {
         String[] parts = address.split(":");
-        return new InetSocketAddress(parts[0], Integer.parseInt(parts[1]));
+        if (parts.length != 2 || parts[1].isEmpty()) {
+            throw new IllegalArgumentException("Invalid proxy address (expected host:port): " + address);
+        }
+        try {
+            return new InetSocketAddress(parts[0], Integer.parseInt(parts[1]));
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Invalid proxy port in address: " + address);
+        }
     }
 
     @Override

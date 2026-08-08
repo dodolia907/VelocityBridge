@@ -49,8 +49,12 @@ public final class PlayerBridgeListener {
             message = RomajiConverter.convert(message);
         }
 
-        event.setResult(PlayerChatEvent.ChatResult.denied());
-        coordinator.onChat(player.getUsername(), message);
+        // 1.19.1+ の署名付きチャットは denied() を返すと protocol error で蹴られるため、
+        // message() で書き換えて転送し、送信元バックエンドがローカル表示する。
+        event.setResult(PlayerChatEvent.ChatResult.message(message));
+        String senderServer = player.getCurrentServer()
+                .map(s -> s.getServerInfo().getName()).orElse("");
+        coordinator.onChat(player.getUsername(), message, senderServer);
     }
 
     /** ローマ字変換モードを切り替える。 */

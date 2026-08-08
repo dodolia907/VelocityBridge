@@ -55,7 +55,7 @@ class CoordinatorChatTest {
         assertTrue(awaitUntil(() -> leaderChat.contains("proxy-2|Alice|hello")),
                 "leader should display the follower's chat");
         assertEquals(1, leaderChat.count("proxy-2|Alice|hello"));
-        assertEquals(1, followerChat.count("proxy-2|Alice|hello"),
+        assertEquals(1, followerChat.count("proxy-2|Alice|hello|"),
                 "sender proxy should display the chat exactly once");
     }
 
@@ -67,9 +67,22 @@ class CoordinatorChatTest {
 
         assertTrue(awaitUntil(() -> followerChat.contains("proxy-1|Bob|hi")),
                 "follower should display the leader's chat");
-        assertEquals(1, leaderChat.count("proxy-1|Bob|hi"),
+        assertEquals(1, leaderChat.count("proxy-1|Bob|hi|"),
                 "leader should display its own chat exactly once");
         assertEquals(1, followerChat.count("proxy-1|Bob|hi"));
+    }
+
+    @Test
+    void localChatPassesSenderServerForBackendExclusion() throws Exception {
+        startTwoNodes();
+
+        // 送信元バックエンドが除外対象として伝わること（バックエンドがローカル表示するため）
+        leader.onChat("Bob", "hi", "paper-1");
+
+        assertTrue(awaitUntil(() -> leaderChat.contains("proxy-1|Bob|hi|paper-1")),
+                "local relay should exclude the sender's backend server");
+        // 送信元プロキシは除外なしの 3 引数経路（リモート）では受けない
+        assertEquals(0, leaderChat.count("proxy-1|Bob|hi|"));
     }
 
     @Test
@@ -163,6 +176,11 @@ class CoordinatorChatTest {
         @Override
         public void onRemoteChat(String senderProxyId, String username, String message) {
             calls.add(senderProxyId + "|" + username + "|" + message);
+        }
+
+        @Override
+        public void onRemoteChat(String senderProxyId, String username, String message, String excludeServer) {
+            calls.add(senderProxyId + "|" + username + "|" + message + "|" + excludeServer);
         }
 
         private boolean contains(String expected) {

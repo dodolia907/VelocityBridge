@@ -43,4 +43,18 @@ class LatencyProbeTest {
             assertEquals(LatencyProbe.UNREACHABLE, probe.rtt("x"));
         }
     }
+
+    @Test
+    void skipsProxiesWithMalformedAddress() throws Exception {
+        try (LatencyProbe probe = new LatencyProbe(List.of(
+                new VelocityBridgeConfig.ProxyInfo("no-port", "127.0.0.1", ""),
+                new VelocityBridgeConfig.ProxyInfo("bad-port", "127.0.0.1:not-a-number", "")))) {
+            probe.probeAll();
+
+            Thread.sleep(300);
+            // 不正アドレスのプロキシは例外で止めず UNREACHABLE として保持される
+            assertEquals(LatencyProbe.UNREACHABLE, probe.rtt("no-port"));
+            assertEquals(LatencyProbe.UNREACHABLE, probe.rtt("bad-port"));
+        }
+    }
 }

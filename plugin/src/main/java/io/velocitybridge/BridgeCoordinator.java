@@ -182,21 +182,32 @@ public final class BridgeCoordinator {
     }
 
     /**
-     * チャットメッセージをネットワーク全体へ配信する。
-     *
-     * <p>プラグインは {@code PlayerChatEvent} を deny しているため、発言元プロキシでも
-     * ローカル表示が必要。ここで一度ローカル表示し、他プロキシへはハブ経由で配信する
-     * （受信側は各ハンドラで表示する）。</p>
+     * チャットメッセージをネットワーク全体へ配信する（テスト等の便宜用）。
      *
      * @param username 発言者
      * @param message  メッセージ内容（変換済み）
      */
     public void onChat(String username, String message) {
+        onChat(username, message, "");
+    }
+
+    /**
+     * チャットメッセージをネットワーク全体へ配信する。
+     *
+     * <p>1.19.1+ では {@code PlayerChatEvent} を denied できないため {@code message()} で書き換え転送し、
+     * 送信元バックエンドがローカル表示する。ここでは他プレイヤーへの表示と他プロキシへの配信を行う
+     * （二重表示を避けるため送信元バックエンドのプレイヤーは除外する）。</p>
+     *
+     * @param username 発言者
+     * @param message  メッセージ内容（変換済み）
+     * @param senderServer 送信元のバックエンドサーバ名（ローカル表示除外対象）
+     */
+    public void onChat(String username, String message, String senderServer) {
         JsonObject payload = new JsonObject();
         payload.addProperty("username", username);
         payload.addProperty("message", message);
 
-        chatRelay.onRemoteChat(nodeId, username, message);
+        chatRelay.onRemoteChat(nodeId, username, message, senderServer);
 
         if (leader) {
             hubServer.broadcast(Message.of(MessageType.CHAT_MESSAGE, nodeId, payload), null);
