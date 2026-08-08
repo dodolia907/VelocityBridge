@@ -5,6 +5,8 @@ import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import io.velocitybridge.chat.ChatRelay;
 import io.velocitybridge.config.VelocityBridgeConfig;
+import io.velocitybridge.discord.DiscordHook;
+import io.velocitybridge.discord.DiscordMessages;
 import io.velocitybridge.hub.AuthHandler;
 import io.velocitybridge.hub.GlobalPlayerRegistry;
 import io.velocitybridge.hub.HubClient;
@@ -37,6 +39,7 @@ public final class BridgeCoordinator {
     private final ChatRelay chatRelay;
     private final HubServer hubServer;
     private final HubClient hubClient;
+    private final DiscordHook discordHook;
     private final boolean leader;
     private final String nodeId;
 
@@ -62,6 +65,14 @@ public final class BridgeCoordinator {
                 parseAddress(config.leaderAddress()),
                 config.secret(),
                 new FollowerHandler(serverNodeId));
+        VelocityBridgeConfig.DiscordConfig discord = config.discord();
+        this.discordHook = leader && discord != null && discord.enabled()
+                ? new DiscordHook(discord.webhookUrl(), discord.username(), discord.avatarUrl())
+                : null;
+        if (discordHook != null) {
+            logger.info("Discord webhook enabled (chat={}, join-leave={}, transfer={})",
+                    discord.notifyChat(), discord.notifyJoinLeave(), discord.notifyTransfer());
+        }
     }
 
     /** ノードIDを返す。 */
@@ -117,6 +128,9 @@ public final class BridgeCoordinator {
         if (hubClient != null) {
             hubClient.close();
         }
+        if (discordHook != null) {
+            discordHook.close();
+        }
     }
 
     /**
@@ -134,6 +148,8 @@ public final class BridgeCoordinator {
         if (leader) {
             registry.register(new GlobalPlayerRegistry.PlayerEntry(uniqueId, username, nodeId));
             hubServer.broadcast(Message.of(MessageType.PLAYER_JOIN, nodeId, payload), null);
+            postDiscord(config.discord().notifyJoinLeave(),
+                    discord -> discord.send(DiscordMessages.playerJoin(username, nodeId)));
         } else {
             registry.register(new GlobalPlayerRegistry.PlayerEntry(uniqueId, username, nodeId));
             hubClient.send(Message.of(MessageType.PLAYER_JOIN, nodeId, payload));
@@ -150,9 +166,15 @@ public final class BridgeCoordinator {
         payload.addProperty("uuid", uniqueId.toString());
         payload.addProperty("proxyId", nodeId);
 
+        GlobalPlayerRegistry.PlayerEntry entry = findEntry(uniqueId);
+        String username = entry == null ? "?" : entry.username();
+        payload.addProperty("username", username);
+
         if (leader) {
             registry.remove(uniqueId);
             hubServer.broadcast(Message.of(MessageType.PLAYER_LEAVE, nodeId, payload), null);
+            postDiscord(config.discord().notifyJoinLeave(),
+                    discord -> discord.send(DiscordMessages.playerLeave(username, nodeId)));
         } else {
             registry.remove(uniqueId);
             hubClient.send(Message.of(MessageType.PLAYER_LEAVE, nodeId, payload));
@@ -178,6 +200,8 @@ public final class BridgeCoordinator {
 
         if (leader) {
             hubServer.broadcast(Message.of(MessageType.CHAT_MESSAGE, nodeId, payload), null);
+            postDiscord(config.discord().notifyChat(),
+                    discord -> discord.send(DiscordMessages.chat(username, message)));
         } else {
             hubClient.send(Message.of(MessageType.CHAT_MESSAGE, nodeId, payload));
         }
@@ -274,14 +298,44 @@ public final class BridgeCoordinator {
         Message msg = Message.of(MessageType.TRANSFER_RESPONSE, nodeId, payload);
         if (leader) {
             hubServer.broadcast(msg, null);
+            postTransferResult(payload, nodeId);
         } else {
             hubClient.send(msg);
         }
     }
 
+    /** 転送結果を Discord へ投稿する（リーダーのみ）。 */
+    private void postTransferResult(JsonObject payload, String sender) {
+        String username = payload.has("username") ? payload.get("username").getAsString() : "?";
+        String target = payload.has("targetProxyId") ? payload.get("targetProxyId").getAsString() : "?";
+        String reason = payload.has("message") ? payload.get("message").getAsString() : "";
+        boolean success = payload.has("success") && payload.get("success").getAsBoolean();
+        postDiscord(config.discord().notifyTransfer(), discord -> discord.send(success
+                ? DiscordMessages.transferSuccess(username, sender, target)
+                : DiscordMessages.transferFailure(username, target, reason)));
+    }
+
     /** フォロワーがリーダーへ接続済みか。 */
     public boolean isHubConnected() {
         return leader || (hubClient != null && hubClient.isConnected());
+    }
+
+    /**
+     * リーダーのみ WebHook 投稿を実行する。
+     *
+     * <p>投稿をキューに積むだけなので、ネットワークイベント処理をブロックしない。</p>
+     *
+     * @param enabled イベント種別ごとの投稿許可設定
+     * @param action  投稿処理
+     */
+    private void postDiscord(boolean enabled, java.util.function.Consumer<DiscordHook> action) {
+        if (!enabled) {
+            return;
+        }
+        DiscordHook hook = this.discordHook;
+        if (hook != null) {
+            action.accept(hook);
+        }
     }
 
     private static InetSocketAddress parseAddress(String address) {
@@ -310,12 +364,18 @@ public final class BridgeCoordinator {
                     registry.register(new GlobalPlayerRegistry.PlayerEntry(uuid, username, sender));
                     hubServer.broadcast(Message.of(MessageType.PLAYER_JOIN, sender, message.payload()), sender);
                     notifyListener(sender, message);
+                    postDiscord(config.discord().notifyJoinLeave(),
+                            discord -> discord.send(DiscordMessages.playerJoin(username, sender)));
                 }
                 case MessageType.PLAYER_LEAVE -> {
                     UUID uuid = UUID.fromString(message.payload().get("uuid").getAsString());
                     registry.remove(uuid);
                     hubServer.broadcast(Message.of(MessageType.PLAYER_LEAVE, sender, message.payload()), sender);
                     notifyListener(sender, message);
+                    String username = message.payload().has("username")
+                            ? message.payload().get("username").getAsString() : "?";
+                    postDiscord(config.discord().notifyJoinLeave(),
+                            discord -> discord.send(DiscordMessages.playerLeave(username, sender)));
                 }
                 case MessageType.PLAYER_LIST_FULL -> {
                     // 再接続時の再同期: 送信ノード配下のプレイヤーを登録し、他ノードへJOINを再配信する
@@ -347,6 +407,10 @@ public final class BridgeCoordinator {
                             message.payload().get("username").getAsString(),
                             message.payload().get("message").getAsString());
                     notifyListener(sender, message);
+                    postDiscord(config.discord().notifyChat(),
+                            discord -> discord.send(DiscordMessages.chat(
+                                    message.payload().get("username").getAsString(),
+                                    message.payload().get("message").getAsString())));
                 }
                 case MessageType.TRANSFER_REQUEST -> {
                     hubServer.broadcast(Message.of(MessageType.TRANSFER_REQUEST, sender, message.payload()), sender);
@@ -357,6 +421,7 @@ public final class BridgeCoordinator {
                     hubServer.broadcast(Message.of(MessageType.TRANSFER_RESPONSE, sender, message.payload()), sender);
                     logger.info("Transfer result from {}: {}", sender, summarizeTransfer(message.payload()));
                     notifyListener(sender, message);
+                    postTransferResult(message.payload(), sender);
                 }
                 case MessageType.HEARTBEAT -> {
                     // ハートビートは HubServer が最終受信時刻を更新済み。追加処理なし。
@@ -373,7 +438,10 @@ public final class BridgeCoordinator {
                 JsonObject payload = new JsonObject();
                 payload.addProperty("uuid", entry.uniqueId().toString());
                 payload.addProperty("proxyId", nodeId);
+                payload.addProperty("username", entry.username());
                 hubServer.broadcast(Message.of(MessageType.PLAYER_LEAVE, nodeId, payload), nodeId);
+                postDiscord(config.discord().notifyJoinLeave(),
+                        discord -> discord.send(DiscordMessages.playerLeave(entry.username(), nodeId)));
             }
         }
 

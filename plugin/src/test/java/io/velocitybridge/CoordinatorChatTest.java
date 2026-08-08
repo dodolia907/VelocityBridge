@@ -1,13 +1,23 @@
 package io.velocitybridge;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.sun.net.httpserver.HttpServer;
+
 import io.velocitybridge.chat.ChatRelay;
 import io.velocitybridge.config.VelocityBridgeConfig;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -62,10 +72,54 @@ class CoordinatorChatTest {
         assertEquals(1, followerChat.count("proxy-1|Bob|hi"));
     }
 
+    @Test
+    void discordChatIsPostedByLeaderExactlyOnce() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        List<String> posts = new CopyOnWriteArrayList<>();
+        HttpServer discord = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        try {
+            discord.createContext("/webhook", exchange -> {
+                posts.add(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+                byte[] ok = "ok".getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200, ok.length);
+                try (OutputStream out = exchange.getResponseBody()) {
+                    out.write(ok);
+                }
+                latch.countDown();
+            });
+            discord.start();
+            String webhookUrl = "http://127.0.0.1:" + discord.getAddress().getPort() + "/webhook";
+            startTwoNodes(webhookUrl);
+
+            follower.onChat("Alice", "hello from follower");
+            leader.onChat("Bob", "hi from leader");
+
+            assertTrue(awaitUntil(() -> posts.stream().anyMatch(p -> p.contains("hello from follower"))),
+                    "leader should post follower chat to Discord");
+            assertTrue(awaitUntil(() -> posts.stream().anyMatch(p -> p.contains("hi from leader"))),
+                    "leader should post its own chat to Discord");
+            // 各発言が 1 回だけ投稿されること（二重投稿なし）
+            long followerPosts = posts.stream().filter(p -> p.contains("hello from follower")).count();
+            long leaderPosts = posts.stream().filter(p -> p.contains("hi from leader")).count();
+            assertEquals(1, followerPosts, "follower chat should be posted exactly once");
+            assertEquals(1, leaderPosts, "leader chat should be posted exactly once");
+        } finally {
+            discord.stop(0);
+        }
+    }
+
     private void startTwoNodes() throws Exception {
-        leader = new BridgeCoordinator(null,
-                config("proxy-1", "leader", "", 0),
-                leaderChat, new AtomicReference<>());
+        startTwoNodes(null);
+    }
+
+    private void startTwoNodes(String webhookUrl) throws Exception {
+        VelocityBridgeConfig leaderConfig = webhookUrl == null
+                ? config("proxy-1", "leader", "", 0)
+                : new VelocityBridgeConfig("proxy-1", "leader", "", 0, "test-secret", List.of(
+                        new VelocityBridgeConfig.ProxyInfo("proxy-1", "127.0.0.1:25565", "Local"),
+                        new VelocityBridgeConfig.ProxyInfo("proxy-2", "127.0.0.1:25566", "Local")),
+                        new VelocityBridgeConfig.DiscordConfig(webhookUrl, "VelocityBridge", "", true, true, true));
+        leader = new BridgeCoordinator(null, leaderConfig, leaderChat, new AtomicReference<>());
         leader.start();
 
         int hubPort = leader.getHubServer().getPort();

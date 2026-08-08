@@ -25,6 +25,7 @@ import java.util.Map;
  *   <li>{@code hub-port}: リーダーのハブ待ち受けポート（leader で必須）</li>
  *   <li>{@code secret-file}: forwarding.secret のパス（未設定なら設定ファイルと同ディレクトリ）</li>
  *   <li>{@code proxies}: プロキシ定義のリスト</li>
+ *   <li>{@code discord}: Discord WebHook 連携の設定</li>
  * </ul>
  *
  * @param nodeId          自ノードID
@@ -33,6 +34,7 @@ import java.util.Map;
  * @param hubPort         leader 用のハブ待ち受けポート
  * @param secret          ハブ認証シークレット
  * @param proxies         プロキシ定義
+ * @param discord         Discord WebHook 連携設定
  */
 public record VelocityBridgeConfig(
         String nodeId,
@@ -40,10 +42,32 @@ public record VelocityBridgeConfig(
         String leaderAddress,
         int hubPort,
         String secret,
-        List<ProxyInfo> proxies) {
+        List<ProxyInfo> proxies,
+        DiscordConfig discord) {
 
     /** プロキシ1台分の定義。 */
     public record ProxyInfo(String id, String address, String region) {
+    }
+
+    /** Discord WebHook 連携の設定。 */
+    public record DiscordConfig(String webhookUrl, String username, String avatarUrl,
+                                boolean notifyChat, boolean notifyJoinLeave, boolean notifyTransfer) {
+
+        /** WebHook URL が設定されていて有効か。 */
+        public boolean enabled() {
+            return webhookUrl != null && !webhookUrl.isBlank();
+        }
+    }
+
+    /**
+     * Discord 連携が無効な既定設定。
+     *
+     * <p>テストや既存呼び出しが 6 引数コンストラクタを使えるようにするための便宜用。</p>
+     */
+    public VelocityBridgeConfig(String nodeId, String mode, String leaderAddress, int hubPort,
+                                String secret, List<ProxyInfo> proxies) {
+        this(nodeId, mode, leaderAddress, hubPort, secret, proxies,
+                new DiscordConfig("", "VelocityBridge", "", true, true, true));
     }
 
     /** 既定の設定ファイル名。 */
@@ -93,7 +117,25 @@ public record VelocityBridgeConfig(
             }
         }
 
-        return new VelocityBridgeConfig(nodeId, mode, leaderAddress, hubPort, secret, List.copyOf(proxies));
+        return new VelocityBridgeConfig(nodeId, mode, leaderAddress, hubPort, secret, List.copyOf(proxies),
+                loadDiscord(data));
+    }
+
+    private static DiscordConfig loadDiscord(Map<String, Object> data) {
+        Map<String, Object> discord = new LinkedHashMap<>();
+        Object discordObj = data.get("discord");
+        if (discordObj instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                discord.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return new DiscordConfig(
+                asString(discord, "webhook-url", ""),
+                asString(discord, "username", "VelocityBridge"),
+                asString(discord, "avatar-url", ""),
+                asBool(discord, "notify-chat", true),
+                asBool(discord, "notify-join-leave", true),
+                asBool(discord, "notify-transfer", true));
     }
 
     private static String asString(Map<String, Object> data, String key, String defaultValue) {
@@ -105,6 +147,14 @@ public record VelocityBridgeConfig(
         Object value = data.get(key);
         if (value instanceof Number number) {
             return number.intValue();
+        }
+        return defaultValue;
+    }
+
+    private static boolean asBool(Map<String, Object> data, String key, boolean defaultValue) {
+        Object value = data.get(key);
+        if (value instanceof Boolean bool) {
+            return bool;
         }
         return defaultValue;
     }
@@ -143,6 +193,16 @@ public record VelocityBridgeConfig(
                   - id: "proxy-2"
                     address: "127.0.0.1:25566"
                     region: "Local"
+
+                # Discord webhook integration (leader-only posting).
+                # Leave webhook-url empty to disable.
+                discord:
+                  # webhook-url: "https://discord.com/api/webhooks/..."
+                  username: "VelocityBridge"
+                  avatar-url: ""
+                  notify-chat: true
+                  notify-join-leave: true
+                  notify-transfer: true
                 """;
         try (OutputStream out = Files.newOutputStream(configPath)) {
             out.write(content.getBytes(StandardCharsets.UTF_8));
