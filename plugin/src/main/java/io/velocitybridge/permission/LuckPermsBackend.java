@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
  * LuckPerms API を利用した権限バックエンド。
@@ -123,9 +124,15 @@ public final class LuckPermsBackend implements PermissionBackend {
         GroupManager groupManager = luckPerms.getGroupManager();
         List<HolderSnapshot> result = new ArrayList<>();
         return userManager.getUniqueUsers()
-                .thenCompose(uuids -> userManager.loadUsers(uuids))
+                .thenCompose(uuids -> {
+                    List<CompletableFuture<User>> futures = uuids.stream()
+                            .map(userManager::loadUser)
+                            .collect(Collectors.toList());
+                    return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                            .thenApply(v -> futures.stream().map(CompletableFuture::join).collect(Collectors.toList()));
+                })
                 .thenCompose(users -> {
-                    for (User user : users.values()) {
+                    for (User user : users) {
                         result.add(snapshotOf("user", user.getUniqueId().toString(), user));
                     }
                     return groupManager.loadAllGroups();

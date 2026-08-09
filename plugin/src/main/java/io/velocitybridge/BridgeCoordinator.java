@@ -20,6 +20,7 @@ import io.velocitybridge.hub.HubServer;
 import io.velocitybridge.hub.Message;
 import io.velocitybridge.hub.MessageCodec;
 import io.velocitybridge.hub.MessageType;
+import io.velocitybridge.hub.payload.Payloads;
 import io.velocitybridge.permission.PermissionBackend;
 import io.velocitybridge.permission.PermissionSync;
 
@@ -632,22 +633,20 @@ public final class BridgeCoordinator {
         }
 
         private void handlePlayerJoin(String sender, Message message) {
-            UUID uuid = UUID.fromString(message.payload().get("uuid").getAsString());
-            String username = message.payload().get("username").getAsString();
-            registry.register(new GlobalPlayerRegistry.PlayerEntry(uuid, username, sender));
+            Payloads.PlayerJoin join = message.payloadAs(Payloads.PlayerJoin.class);
+            registry.register(new GlobalPlayerRegistry.PlayerEntry(join.uuid(), join.username(), sender));
             hubServer.broadcast(Message.of(MessageType.PLAYER_JOIN, sender, message.payload()), sender);
             notifyListener(sender, message);
             postDiscord(config.discord().notifyJoinLeave(),
-                    discord -> discord.send(DiscordMessages.playerJoin(username, sender)));
+                    discord -> discord.send(DiscordMessages.playerJoin(join.username(), sender)));
         }
 
         private void handlePlayerLeave(String sender, Message message) {
-            UUID uuid = UUID.fromString(message.payload().get("uuid").getAsString());
-            registry.remove(uuid);
+            Payloads.PlayerLeave leave = message.payloadAs(Payloads.PlayerLeave.class);
+            registry.remove(leave.uuid());
             hubServer.broadcast(Message.of(MessageType.PLAYER_LEAVE, sender, message.payload()), sender);
             notifyListener(sender, message);
-            String username = message.payload().has("username")
-                    ? message.payload().get("username").getAsString() : "?";
+            String username = leave.username() != null ? leave.username() : "?";
             postDiscord(config.discord().notifyJoinLeave(),
                     discord -> discord.send(DiscordMessages.playerLeave(username, sender)));
         }
@@ -675,17 +674,12 @@ public final class BridgeCoordinator {
         }
 
         private void handleChatMessage(String sender, Message message) {
+            Payloads.ChatMessage chat = message.payloadAs(Payloads.ChatMessage.class);
             hubServer.broadcast(Message.of(MessageType.CHAT_MESSAGE, sender, message.payload()), sender);
-            chatRelay.onRemoteChat(sender,
-                    message.payload().get("username").getAsString(),
-                    message.payload().get("message").getAsString(),
-                    kanaOf(message.payload()));
+            chatRelay.onRemoteChat(sender, chat.username(), chat.message(), kanaOf(message.payload()));
             notifyListener(sender, message);
             postDiscord(config.discord().notifyChat(),
-                    discord -> discord.send(DiscordMessages.chat(
-                            message.payload().get("username").getAsString(),
-                            message.payload().get("message").getAsString(),
-                            kanaOf(message.payload()))));
+                    discord -> discord.send(DiscordMessages.chat(chat.username(), chat.message(), kanaOf(message.payload()))));
         }
 
         private void handleTransferRequest(String sender, Message message) {
@@ -794,23 +788,20 @@ public final class BridgeCoordinator {
         }
 
         private void handlePlayerJoin(Message message) {
-            UUID uuid = UUID.fromString(message.payload().get("uuid").getAsString());
-            String username = message.payload().get("username").getAsString();
-            String proxyId = message.payload().get("proxyId").getAsString();
-            registry.register(new GlobalPlayerRegistry.PlayerEntry(uuid, username, proxyId));
+            Payloads.PlayerJoin join = message.payloadAs(Payloads.PlayerJoin.class);
+            registry.register(new GlobalPlayerRegistry.PlayerEntry(join.uuid(), join.username(), join.proxyId()));
             notifyListener(message);
         }
 
         private void handlePlayerLeave(Message message) {
-            UUID uuid = UUID.fromString(message.payload().get("uuid").getAsString());
-            registry.remove(uuid);
+            Payloads.PlayerLeave leave = message.payloadAs(Payloads.PlayerLeave.class);
+            registry.remove(leave.uuid());
             notifyListener(message);
         }
 
         private void handleChatMessage(Message message) {
-            String username = message.payload().get("username").getAsString();
-            String text = message.payload().get("message").getAsString();
-            chatRelay.onRemoteChat(message.sender(), username, text, kanaOf(message.payload()));
+            Payloads.ChatMessage chat = message.payloadAs(Payloads.ChatMessage.class);
+            chatRelay.onRemoteChat(message.sender(), chat.username(), chat.message(), kanaOf(message.payload()));
             notifyListener(message);
         }
 

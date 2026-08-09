@@ -24,6 +24,20 @@ public final class MessageCodec {
     }
 
     /**
+     * DTO レコードを JsonObject に変換する。
+     */
+    public static JsonObject encodePayload(Object payloadDto) {
+        return GSON.toJsonTree(payloadDto).getAsJsonObject();
+    }
+
+    /**
+     * JsonObject を DTO レコードに変換する。
+     */
+    public static <T> T decodePayload(JsonObject payload, Class<T> clazz) {
+        return GSON.fromJson(payload, clazz);
+    }
+
+    /**
      * メッセージをエンコードする。
      *
      * @param message 対象メッセージ

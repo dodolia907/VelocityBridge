@@ -17,4 +17,12 @@ public record Message(String type, String sender, JsonObject payload) {
     public static Message of(String type, String sender, JsonObject payload) {
         return new Message(type, sender, payload);
     }
+    
+    public static Message of(String type, String sender, Object payloadDto) {
+        return new Message(type, sender, MessageCodec.encodePayload(payloadDto));
+    }
+
+    public <T> T payloadAs(Class<T> clazz) {
+        return MessageCodec.decodePayload(payload, clazz);
+    }
 }
