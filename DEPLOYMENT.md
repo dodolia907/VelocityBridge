@@ -29,7 +29,7 @@ This guide describes how to deploy a VelocityBridge network in production: multi
 - **No GeoDNS.** Each proxy has its own public address (plain A/AAAA record); players choose the closest one themselves.
 - Players can compare nodes in-game with `/vb proxies` (address, region, player count, latency from their current proxy) and switch mid-session with `/vb transfer <proxyId>` (client must be 1.20.5+).
 - All proxies share the **same backend farm** and the **same `forwarding.secret`**.
-- One proxy runs as the **leader** and relays inter-proxy messages (global player list, chat, transfers).
+- One proxy runs as the **leader** and relays inter-proxy messages (global player list, chat, transfers) and optionally posts join/leave/chat/transfer events to a Discord channel via webhook.
 
 ## 2. Prerequisites
 
@@ -106,6 +106,24 @@ proxies:
   - id: "proxy-3"
     address: "eu.play.example.com:25567"
     region: "EU (Frankfurt)"
+
+# Discord webhook integration (leader-only posting).
+# Leave webhook-url empty to disable.
+discord:
+  webhook-url: ""          # e.g. "https://discord.com/api/webhooks/..."
+  username: "VelocityBridge"
+  avatar-url: ""
+  notify-chat: true
+  notify-join-leave: true
+  notify-transfer: true
+
+# Chat relay settings.
+# include-sender: true  -> the sender also receives the converted message
+#                          (their client may show the original as well).
+# include-sender: false -> the sender is excluded (single display, but the
+#                          converted message is not shown to them).
+chat:
+  include-sender: true
 ```
 
 **Follower proxies** — `velocity.toml` identical except bind address; `accepts-transfers = true` on every proxy. Plugin config:
@@ -135,6 +153,8 @@ proxies:
 
 > The plugin reads the hub secret from `forwarding.secret` in its data directory. If missing, it generates a random one — that would **break inter-proxy auth**, so make sure the same secret file is present on every node (the same content as `forwarding-secret-file`).
 
+> **Discord (leader only):** only the leader posts to the webhook. Configure the `discord` section on the leader; followers ignore it. Chat posts include the converted kana when romaji conversion was applied. See [section 3.7](#37-discord-webhook-integration).
+
 ### 3.5 Publishing the proxy list
 
 Because players choose their own proxy, publish the addresses somewhere visible:
@@ -153,6 +173,25 @@ Latency is measured **proxy-to-proxy** (a Minecraft status ping from the current
 
 Verify with `/vb status` on each proxy: followers should report `Hub connected: true`, and the leader should list the connected nodes.
 
+### 3.7 Discord webhook integration
+
+The leader proxy can mirror chat, join/leave, and transfer events to a Discord channel using an incoming webhook (outgoing Discord → game sync is not supported).
+
+1. Create an incoming webhook in your Discord channel and copy its URL.
+2. Set `discord.webhook-url` in the leader's `velocitybridge.conf`; optionally set `username` (webhook display name) and `avatar-url`.
+3. Toggle per-event posting with `notify-chat`, `notify-join-leave`, `notify-transfer`.
+4. Apply with `/vb reload` or restart the leader.
+
+Posted formats:
+
+| Event | Format |
+| --- | --- |
+| Chat | `username: message (kana)` |
+| Join | `**username** joined (proxyId)` |
+| Leave | `**username** left (proxyId)` |
+| Transfer OK | `:arrows_counterclockwise: **username** transferred source -> target` |
+| Transfer fail | `:warning: **username** transfer to target failed: reason` |
+
 ## 4. Permissions
 
 Grant via LuckPerms (or equivalent):
@@ -165,6 +204,7 @@ Grant via LuckPerms (or equivalent):
 | `velocitybridge.vbmode` | all players | `/vbmode` |
 | `velocitybridge.transfer` | admins | `/vb transfer <proxyId>` (self) |
 | `velocitybridge.transfer.others` | admins | `/vb transfer <proxyId> <player>` |
+| `velocitybridge.reload` | admins | `/vb reload` |
 
 ## 5. Security hardening
 
@@ -189,19 +229,23 @@ Grant via LuckPerms (or equivalent):
 - `/vb proxies` — confirms every node is reachable and shows per-node latency/region from the current node.
 - Cross-proxy chat: a player on proxy A sends a message; players on proxy B should see it.
 - Transfer smoke test: `/vb transfer proxy-2` from proxy-1; the client should rejoin through proxy-2 with the same UUID/skin.
+- Discord: post a message in-game and confirm it appears in the channel; confirm join/leave and transfer posts.
+- `/vb reload` — after editing Discord/chat/proxy settings, confirm the new settings apply without a restart.
 
 ## 8. Migration / upgrade checklist
 
 - Keep all proxies on the **same** plugin version.
 - Keep the `forwarding.secret` and `proxies` list identical across nodes when upgrading config.
 - Upgrade followers first, then the leader; or schedule a maintenance window (leader restart interrupts inter-proxy features).
+- Use `/vb reload` for Discord, chat, and proxy settings; `node-id` / `mode` / `hub-port` / `leader-address` / `secret` changes still require a proxy restart.
 - After upgrade, verify `/vb status` and a cross-proxy chat/transfer.
 
 ## 9. Known limitations
 
-- `/vb reload` is not implemented; restart the proxy to apply config changes.
+- `/vb reload` hot-reloads Discord, chat, and proxy settings; changes to `node-id` / `mode` / `hub-port` / `leader-address` / `secret` still require a proxy restart.
 - Hub traffic is not TLS-encrypted out of the box.
 - No automatic leader election; leader is a manual SPOF.
 - Duplicate logins across proxies follow the backend default (last connection wins).
 - Transfer requires clients on 1.20.5+; older clients cannot use `/vb transfer`.
 - `/vb proxies` latency is measured proxy-to-proxy (from the node the player is on), so it is a heuristic — the in-game server list ping column remains the most accurate per-player measure.
+- Discord integration is send-only (webhook); there is no Discord → game direction.
