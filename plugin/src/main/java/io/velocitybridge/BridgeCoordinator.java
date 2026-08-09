@@ -62,6 +62,7 @@ public final class BridgeCoordinator {
     private volatile boolean leader;
     private final String nodeId;
     private final io.velocitybridge.ha.RaftNode raftNode;
+    private final io.velocitybridge.ha.RaftCommunicator raftCommunicator;
 
     /** リーダーが発行する権限バージョン。 */
     private final AtomicLong permissionVersion = new AtomicLong();
@@ -116,11 +117,15 @@ public final class BridgeCoordinator {
 
                         @Override
                         public void sendRequestVote(String targetNodeId, io.velocitybridge.hub.payload.Payloads.RequestVote vote) {
-                            sendDirectVoteRequest(targetNodeId, vote);
+                            if (raftCommunicator != null) {
+                                raftCommunicator.sendVoteRequest(targetNodeId, vote);
+                            }
                         }
                     });
+            this.raftCommunicator = new io.velocitybridge.ha.RaftCommunicator(nodeId, config, this.raftNode);
         } else {
             this.raftNode = null;
+            this.raftCommunicator = null;
         }
     }
 
@@ -198,8 +203,11 @@ public final class BridgeCoordinator {
         }
     }
 
-    /** 起動する。 */
+    /** 開始する。 */
     public void start() {
+        if (raftCommunicator != null) {
+            raftCommunicator.startListening(config.hubPort() + 1000);
+        }
         if (raftNode != null) {
             raftNode.start();
         }
@@ -224,6 +232,9 @@ public final class BridgeCoordinator {
     public void stop() {
         if (raftNode != null) {
             raftNode.stop();
+        }
+        if (raftCommunicator != null) {
+            raftCommunicator.shutdown();
         }
         if (hubServer != null) {
             hubServer.close();
@@ -371,7 +382,7 @@ public final class BridgeCoordinator {
             chatRelay.onRemoteChat(nodeId, username, message, kana, senderUuid);
             chatRelay.sendConversionNotice(senderUuid, kana);
         } else {
-            UUID relaySenderUuid = includeSender ? null : senderUuid;
+            UUID relaySenderUuid = senderUuid != null ? senderUuid : null;
             chatRelay.onRemoteChat(nodeId, username, message, kana, relaySenderUuid);
         }
 
@@ -558,37 +569,6 @@ public final class BridgeCoordinator {
     private void demoteToFollower(String leaderId) {
         this.leader = false;
         logger.info("Demoted to FOLLOWER node: {} (leader={})", nodeId, leaderId);
-    }
-
-    private void sendDirectVoteRequest(String targetProxyId, io.velocitybridge.hub.payload.Payloads.RequestVote voteReq) {
-        VelocityBridgeConfig.ProxyInfo targetInfo = config.proxies().stream()
-                .filter(p -> p.id().equals(targetProxyId))
-                .findFirst().orElse(null);
-        if (targetInfo == null) {
-            return;
-        }
-        Thread.startVirtualThread(() -> {
-            try (Socket s = new Socket()) {
-                InetSocketAddress addr = parseAddress(targetInfo.address(), config.hubPort());
-                s.connect(addr, 2000);
-                s.setTcpNoDelay(true);
-                MessageCipher cipher = new MessageCipher(config.secret());
-
-                JsonObject payload = MessageCodec.encodePayload(voteReq);
-                Message msg = Message.of(MessageType.REQUEST_VOTE, nodeId, payload);
-                MessageCodec.write(s.getOutputStream(), msg, cipher);
-
-                Message respMsg = MessageCodec.read(s.getInputStream(), cipher);
-                if (respMsg != null && MessageType.REQUEST_VOTE_RESPONSE.equals(respMsg.type())) {
-                    io.velocitybridge.hub.payload.Payloads.RequestVoteResponse resp =
-                            MessageCodec.decodePayload(respMsg.payload(), io.velocitybridge.hub.payload.Payloads.RequestVoteResponse.class);
-                    if (raftNode != null) {
-                        raftNode.handleVoteResponse(resp);
-                    }
-                }
-            } catch (Exception ignored) {
-            }
-        });
     }
 
     /** 他プロキシからの権限変更の差分をローカルに適用する。 */
