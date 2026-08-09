@@ -18,6 +18,7 @@ import io.velocitybridge.hub.GlobalPlayerRegistry;
 import io.velocitybridge.hub.HubClient;
 import io.velocitybridge.hub.HubServer;
 import io.velocitybridge.hub.Message;
+import io.velocitybridge.hub.MessageCipher;
 import io.velocitybridge.hub.MessageCodec;
 import io.velocitybridge.hub.MessageType;
 import io.velocitybridge.hub.payload.Payloads;
@@ -28,6 +29,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -57,8 +59,9 @@ public final class BridgeCoordinator {
     private final HubClient hubClient;
     private final List<DiscordHookEntry> discordHooks = new java.util.concurrent.CopyOnWriteArrayList<>();
     private volatile PermissionSync permissionSync;
-    private final boolean leader;
+    private volatile boolean leader;
     private final String nodeId;
+    private final io.velocitybridge.ha.RaftNode raftNode;
 
     /** リーダーが発行する権限バージョン。 */
     private final AtomicLong permissionVersion = new AtomicLong();
@@ -96,6 +99,29 @@ public final class BridgeCoordinator {
                 new FollowerHandler(serverNodeId));
         VelocityBridgeConfig.DiscordConfig discord = config.discord();
         setupDiscordHooks(discord);
+
+        List<String> allProxyIds = config.proxies().stream().map(VelocityBridgeConfig.ProxyInfo::id).toList();
+        if (config.autoFailover() != null && config.autoFailover().enabled() && allProxyIds.size() >= 3) {
+            this.raftNode = new io.velocitybridge.ha.RaftNode(nodeId, allProxyIds, leader, config.autoFailover().electionTimeoutMs(),
+                    new io.velocitybridge.ha.RaftNode.RaftListener() {
+                        @Override
+                        public void onPromotedToLeader(long term) {
+                            promoteToLeader();
+                        }
+
+                        @Override
+                        public void onDemotedToFollower(long term, String leaderId) {
+                            demoteToFollower(leaderId);
+                        }
+
+                        @Override
+                        public void sendRequestVote(String targetNodeId, io.velocitybridge.hub.payload.Payloads.RequestVote vote) {
+                            sendDirectVoteRequest(targetNodeId, vote);
+                        }
+                    });
+        } else {
+            this.raftNode = null;
+        }
     }
 
     private record DiscordHookEntry(DiscordHook hook, VelocityBridgeConfig.DiscordWebhookConfig config) {
@@ -174,21 +200,31 @@ public final class BridgeCoordinator {
 
     /** 起動する。 */
     public void start() {
+        if (raftNode != null) {
+            raftNode.start();
+        }
         if (leader) {
             try {
-                hubServer.start(config.hubPort());
-                logger.info("Hub server listening on port {}", hubServer.getPort());
+                if (hubServer != null) {
+                    hubServer.start(config.hubPort());
+                    logger.info("Hub server listening on port {}", hubServer.getPort());
+                }
             } catch (Exception e) {
                 throw new RuntimeException("Failed to start hub server", e);
             }
         } else {
-            logger.info("Connecting to leader hub at {}", config.leaderAddress());
-            hubClient.start();
+            if (hubClient != null) {
+                logger.info("Connecting to leader hub at {}", config.leaderAddress());
+                hubClient.start();
+            }
         }
     }
 
     /** 停止する。 */
     public void stop() {
+        if (raftNode != null) {
+            raftNode.stop();
+        }
         if (hubServer != null) {
             hubServer.close();
         }
@@ -504,6 +540,55 @@ public final class BridgeCoordinator {
         postDiscord(VelocityBridgeConfig.DiscordWebhookConfig::notifyTransfer, discord -> discord.send(success
                 ? DiscordMessages.transferSuccess(username, sourceProxyId, targetProxyId)
                 : DiscordMessages.transferFailure(username, targetProxyId, reason)));
+    }
+
+    public boolean isHubConnected() {
+        return leader || (hubClient != null && hubClient.isConnected());
+    }
+
+    public io.velocitybridge.ha.RaftNode getRaftNode() {
+        return raftNode;
+    }
+
+    private void promoteToLeader() {
+        this.leader = true;
+        logger.info("Promoted to LEADER node: {}", nodeId);
+    }
+
+    private void demoteToFollower(String leaderId) {
+        this.leader = false;
+        logger.info("Demoted to FOLLOWER node: {} (leader={})", nodeId, leaderId);
+    }
+
+    private void sendDirectVoteRequest(String targetProxyId, io.velocitybridge.hub.payload.Payloads.RequestVote voteReq) {
+        VelocityBridgeConfig.ProxyInfo targetInfo = config.proxies().stream()
+                .filter(p -> p.id().equals(targetProxyId))
+                .findFirst().orElse(null);
+        if (targetInfo == null) {
+            return;
+        }
+        Thread.startVirtualThread(() -> {
+            try (Socket s = new Socket()) {
+                InetSocketAddress addr = parseAddress(targetInfo.address(), config.hubPort());
+                s.connect(addr, 2000);
+                s.setTcpNoDelay(true);
+                MessageCipher cipher = new MessageCipher(config.secret());
+
+                JsonObject payload = MessageCodec.encodePayload(voteReq);
+                Message msg = Message.of(MessageType.REQUEST_VOTE, nodeId, payload);
+                MessageCodec.write(s.getOutputStream(), msg, cipher);
+
+                Message respMsg = MessageCodec.read(s.getInputStream(), cipher);
+                if (respMsg != null && MessageType.REQUEST_VOTE_RESPONSE.equals(respMsg.type())) {
+                    io.velocitybridge.hub.payload.Payloads.RequestVoteResponse resp =
+                            MessageCodec.decodePayload(respMsg.payload(), io.velocitybridge.hub.payload.Payloads.RequestVoteResponse.class);
+                    if (raftNode != null) {
+                        raftNode.handleVoteResponse(resp);
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        });
     }
 
     /** 他プロキシからの権限変更の差分をローカルに適用する。 */

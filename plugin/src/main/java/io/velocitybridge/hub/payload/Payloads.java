@@ -15,4 +15,6 @@ public interface Payloads {
     record TransferResponse(UUID uuid, boolean success, String reason, String server) {}
     record PermissionVersionRequest(long appliedVersion) {}
     record PermissionVersionResponse(long version) {}
+    record RequestVote(long term, String candidateId, boolean isPreferredLeader) {}
+    record RequestVoteResponse(long term, boolean voteGranted, String voterId) {}
 }

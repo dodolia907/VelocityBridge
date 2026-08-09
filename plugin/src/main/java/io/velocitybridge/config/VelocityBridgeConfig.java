@@ -45,10 +45,16 @@ public record VelocityBridgeConfig(
         String secret,
         List<ProxyInfo> proxies,
         DiscordConfig discord,
-        ChatConfig chat) {
+        ChatConfig chat,
+        AutoFailoverConfig autoFailover) {
 
     /** プロキシ1台分の定義。 */
     public record ProxyInfo(String id, String address, String region) {
+    }
+
+    /** 自動リーダー選出 (Raft HA) の設定。 */
+    public record AutoFailoverConfig(boolean enabled, long electionTimeoutMs) {
+        public static final AutoFailoverConfig DEFAULT = new AutoFailoverConfig(false, 5000L);
     }
 
     /** 個別の Discord WebHook 設定。 */
@@ -104,6 +110,11 @@ public record VelocityBridgeConfig(
         public static final ChatConfig DEFAULT = new ChatConfig(true);
     }
 
+    public VelocityBridgeConfig(String nodeId, String mode, String leaderAddress, int hubPort,
+                                String secret, List<ProxyInfo> proxies, DiscordConfig discord, ChatConfig chat) {
+        this(nodeId, mode, leaderAddress, hubPort, secret, proxies, discord, chat, AutoFailoverConfig.DEFAULT);
+    }
+
     /**
      * Discord 連携が無効な既定設定。
      *
@@ -112,7 +123,7 @@ public record VelocityBridgeConfig(
     public VelocityBridgeConfig(String nodeId, String mode, String leaderAddress, int hubPort,
                                 String secret, List<ProxyInfo> proxies) {
         this(nodeId, mode, leaderAddress, hubPort, secret, proxies,
-                new DiscordConfig("", "VelocityBridge", "", true, true, true), ChatConfig.DEFAULT);
+                new DiscordConfig("", "VelocityBridge", "", true, true, true), ChatConfig.DEFAULT, AutoFailoverConfig.DEFAULT);
     }
 
     /** 既定の設定ファイル名。 */
@@ -163,7 +174,21 @@ public record VelocityBridgeConfig(
         }
 
         return new VelocityBridgeConfig(nodeId, mode, leaderAddress, hubPort, secret, List.copyOf(proxies),
-                loadDiscord(data), loadChat(data));
+                loadDiscord(data), loadChat(data), loadAutoFailover(data));
+    }
+
+    private static AutoFailoverConfig loadAutoFailover(Map<String, Object> data) {
+        Object failoverObj = data.get("auto-failover");
+        if (!(failoverObj instanceof Map<?, ?> map)) {
+            return AutoFailoverConfig.DEFAULT;
+        }
+        Map<String, Object> failover = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            failover.put(String.valueOf(entry.getKey()), entry.getValue());
+        }
+        return new AutoFailoverConfig(
+                asBool(failover, "enabled", false),
+                asLong(failover, "election-timeout-ms", 5000L));
     }
 
     private static DiscordConfig loadDiscord(Map<String, Object> data) {
@@ -234,6 +259,14 @@ public record VelocityBridgeConfig(
         Object value = data.get(key);
         if (value instanceof Number number) {
             return number.intValue();
+        }
+        return defaultValue;
+    }
+
+    private static long asLong(Map<String, Object> data, String key, long defaultValue) {
+        Object value = data.get(key);
+        if (value instanceof Number number) {
+            return number.longValue();
         }
         return defaultValue;
     }

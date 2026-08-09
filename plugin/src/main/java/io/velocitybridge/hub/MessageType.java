@@ -55,4 +55,10 @@ public final class MessageType {
 
     /** 権限フル状態の配信（リーダー→フォロワー）。 */
     public static final String PERMISSION_SNAPSHOT = "PERMISSION_SNAPSHOT";
+
+    /** Raft リーダー選出: 投票要求（Candidate -> Peer）。 */
+    public static final String REQUEST_VOTE = "REQUEST_VOTE";
+
+    /** Raft リーダー選出: 投票応答（Peer -> Candidate）。 */
+    public static final String REQUEST_VOTE_RESPONSE = "REQUEST_VOTE_RESPONSE";
 }
