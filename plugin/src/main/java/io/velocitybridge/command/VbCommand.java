@@ -73,8 +73,7 @@ public final class VbCommand implements SimpleCommand {
     }
 
     private void handleList(CommandSource source) {
-        if (!hasPermission(source, PERMISSION_LIST)) {
-            source.sendPlainMessage("You do not have permission to use this command.");
+        if (!CommandUtils.checkPermission(source, PERMISSION_LIST)) {
             return;
         }
         List<GlobalPlayerRegistry.PlayerEntry> players = coordinator.getRegistry().snapshot();
@@ -94,8 +93,7 @@ public final class VbCommand implements SimpleCommand {
     }
 
     private void handleStatus(CommandSource source) {
-        if (!hasPermission(source, PERMISSION_STATUS)) {
-            source.sendPlainMessage("You do not have permission to use this command.");
+        if (!CommandUtils.checkPermission(source, PERMISSION_STATUS)) {
             return;
         }
         String role = coordinator.isLeader() ? "leader" : "follower";
@@ -115,8 +113,7 @@ public final class VbCommand implements SimpleCommand {
     }
 
     private void handleTransfer(CommandSource source, String[] args) {
-        if (!hasPermission(source, PERMISSION_TRANSFER)) {
-            source.sendPlainMessage("You do not have permission to use this command.");
+        if (!CommandUtils.checkPermission(source, PERMISSION_TRANSFER)) {
             return;
         }
         if (args.length < 2) {
@@ -127,7 +124,7 @@ public final class VbCommand implements SimpleCommand {
 
         UUID targetUuid;
         if (args.length >= 3) {
-            if (!hasPermission(source, PERMISSION_TRANSFER_OTHERS)) {
+            if (!source.hasPermission(PERMISSION_TRANSFER_OTHERS)) {
                 source.sendPlainMessage("You do not have permission to transfer other players.");
                 return;
             }
@@ -138,8 +135,8 @@ public final class VbCommand implements SimpleCommand {
             }
             targetUuid = target.getUniqueId();
         } else {
-            if (!(source instanceof Player sender)) {
-                source.sendPlainMessage("You must specify a player when running from console.");
+            Player sender = CommandUtils.checkPlayer(source);
+            if (sender == null) {
                 return;
             }
             targetUuid = sender.getUniqueId();
@@ -150,8 +147,7 @@ public final class VbCommand implements SimpleCommand {
     }
 
     private void handleReload(CommandSource source) {
-        if (!hasPermission(source, PERMISSION_RELOAD)) {
-            source.sendPlainMessage("You do not have permission to use this command.");
+        if (!CommandUtils.checkPermission(source, PERMISSION_RELOAD)) {
             return;
         }
         reloader.accept(source);
@@ -174,10 +170,7 @@ public final class VbCommand implements SimpleCommand {
         source.sendPlainMessage("  /vb reload");
     }
 
-    private boolean hasPermission(CommandSource source, String permission) {
-        return source.hasPermission(permission);
-    }
-
+    // hasPermission removed
     @Override
     public boolean hasPermission(Invocation invocation) {
         return true; // 個別サブコマンドでチェックする

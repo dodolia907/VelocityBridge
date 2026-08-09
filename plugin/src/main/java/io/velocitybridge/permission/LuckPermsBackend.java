@@ -123,7 +123,7 @@ public final class LuckPermsBackend implements PermissionBackend {
         GroupManager groupManager = luckPerms.getGroupManager();
         List<HolderSnapshot> result = new ArrayList<>();
         return userManager.getUniqueUsers()
-                .thenCompose(userManager::loadUsers)
+                .thenCompose(uuids -> userManager.loadUsers(uuids))
                 .thenCompose(users -> {
                     for (User user : users.values()) {
                         result.add(snapshotOf("user", user.getUniqueId().toString(), user));

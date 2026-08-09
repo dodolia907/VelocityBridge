@@ -25,12 +25,11 @@ public final class VbModeCommand implements SimpleCommand {
     @Override
     public void execute(Invocation invocation) {
         CommandSource source = invocation.source();
-        if (!(source instanceof Player player)) {
-            source.sendPlainMessage("This command can only be used by players.");
+        Player player = CommandUtils.checkPlayer(source);
+        if (player == null) {
             return;
         }
-        if (!source.hasPermission(PERMISSION)) {
-            source.sendPlainMessage("You do not have permission to use this command.");
+        if (!CommandUtils.checkPermission(source, PERMISSION)) {
             return;
         }
 
