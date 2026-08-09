@@ -39,36 +39,50 @@ public class TabListManager {
      * 特定のプレイヤーの TabList 表示を更新する。
      */
     public void updateForPlayer(Player viewer) {
-        Collection<GlobalPlayerRegistry.PlayerEntry> entries = coordinator.getRegistry().snapshot();
-        Set<UUID> globalPlayerUuids = new HashSet<>();
+        // 自プロキシ上の自エントリまたはローカルプレイヤーの表示名を更新
+        viewer.getTabList().getEntries().forEach(entry -> {
+            UUID uuid = entry.getProfile().getId();
+            // グローバルレジストリから検索
+            GlobalPlayerRegistry.PlayerEntry matched = null;
+            for (GlobalPlayerRegistry.PlayerEntry p : coordinator.getRegistry().snapshot()) {
+                if (p.uniqueId().equals(uuid)) {
+                    matched = p;
+                    break;
+                }
+            }
 
-        for (GlobalPlayerRegistry.PlayerEntry entry : entries) {
-            globalPlayerUuids.add(entry.uniqueId());
-
-            boolean isLocalNode = coordinator.getNodeId().equals(entry.proxyId());
+            String proxyId = matched != null ? matched.proxyId() : coordinator.getNodeId();
+            boolean isLocalNode = coordinator.getNodeId().equals(proxyId);
             NamedTextColor color = isLocalNode ? NamedTextColor.GREEN : NamedTextColor.GRAY;
 
+            Component displayName = Component.text("[" + proxyId + "] ", color)
+                    .append(Component.text(entry.getProfile().getName(), NamedTextColor.WHITE));
+
+            entry.setDisplayName(displayName);
+        });
+
+        // 他プロキシにしか存在しないリモートプレイヤーを TabList に追加
+        Collection<GlobalPlayerRegistry.PlayerEntry> entries = coordinator.getRegistry().snapshot();
+        for (GlobalPlayerRegistry.PlayerEntry entry : entries) {
+            if (coordinator.getNodeId().equals(entry.proxyId())) {
+                continue; // ローカルプレイヤーは標準で TabList に存在するためスキップ
+            }
+
+            NamedTextColor color = NamedTextColor.GRAY;
             Component displayName = Component.text("[" + entry.proxyId() + "] ", color)
                     .append(Component.text(entry.username(), NamedTextColor.WHITE));
 
-            if (viewer.getUniqueId().equals(entry.uniqueId()) || viewer.getTabList().containsEntry(entry.uniqueId())) {
-                viewer.getTabList().getEntry(entry.uniqueId()).ifPresent(tabEntry -> {
-                    tabEntry.setDisplayName(displayName);
-                });
-            } else {
+            if (!viewer.getTabList().containsEntry(entry.uniqueId())) {
                 TabListEntry newEntry = TabListEntry.builder()
                         .tabList(viewer.getTabList())
                         .profile(new com.velocitypowered.api.util.GameProfile(entry.uniqueId(), entry.username(), java.util.List.of()))
                         .displayName(displayName)
                         .build();
                 viewer.getTabList().addEntry(newEntry);
-            }
-        }
-
-        // ネットワーク上に存在しなくなったエントリを削除
-        for (TabListEntry existing : viewer.getTabList().getEntries()) {
-            if (!globalPlayerUuids.contains(existing.getProfile().getId())) {
-                viewer.getTabList().removeEntry(existing.getProfile().getId());
+            } else {
+                viewer.getTabList().getEntry(entry.uniqueId()).ifPresent(tabEntry -> {
+                    tabEntry.setDisplayName(displayName);
+                });
             }
         }
     }
