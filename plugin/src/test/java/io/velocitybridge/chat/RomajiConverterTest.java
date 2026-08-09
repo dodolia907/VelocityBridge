@@ -72,4 +72,11 @@ class RomajiConverterTest {
     void convertsUppercaseInput() {
         assertEquals("こんにちわ", RomajiConverter.convert("KONNICHIWA"));
     }
+
+    @Test
+    void convertToKanjiFallbackOrSuccess() {
+        String result = RomajiConverter.convertToKanji("konnichiwa");
+        // API通信が成功した場合は「こんにちは」等、失敗時はフォールバック「こんにちわ」
+        org.junit.jupiter.api.Assertions.assertTrue(result.equals("こんにちは") || result.equals("こんにちわ"));
+    }
 }

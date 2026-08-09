@@ -53,7 +53,7 @@ public final class PlayerBridgeListener {
 
         String kana = "";
         if (!romajiModeDisabled.contains(player.getUniqueId())) {
-            String converted = RomajiConverter.convert(message);
+            String converted = RomajiConverter.convertToKanji(message);
             if (!converted.equals(message)) {
                 kana = converted;
             }

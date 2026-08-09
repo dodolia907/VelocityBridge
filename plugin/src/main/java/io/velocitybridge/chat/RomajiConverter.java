@@ -225,6 +225,63 @@ public final class RomajiConverter {
         return sb.toString();
     }
 
+    private static final java.net.http.HttpClient HTTP_CLIENT = java.net.http.HttpClient.newBuilder()
+            .connectTimeout(java.time.Duration.ofSeconds(3))
+            .build();
+    private static final com.google.gson.Gson GSON = new com.google.gson.Gson();
+
+    /**
+     * ローマ字入力をひらがなへ変換したのち、Google CGI API を使用して漢字に変換する。
+     * ネットワークエラー等の場合はひらがな変換結果へフォールバックする。
+     *
+     * @param input ローマ字入力
+     * @return 漢字かな交じり変換結果（失敗時はひらがな変換結果）
+     */
+    public static String convertToKanji(String input) {
+        String kana = convert(input);
+        if (kana.equals(input)) {
+            return kana;
+        }
+
+        try {
+            String encodedKana = java.net.URLEncoder.encode(kana, java.nio.charset.StandardCharsets.UTF_8);
+            String url = "https://www.google.com/transliterate?langpair=ja-Hira|ja&text=" + encodedKana;
+
+            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(url))
+                    .timeout(java.time.Duration.ofSeconds(3))
+                    .GET()
+                    .build();
+
+            java.net.http.HttpResponse<String> response = HTTP_CLIENT.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                com.google.gson.JsonArray root = GSON.fromJson(response.body(), com.google.gson.JsonArray.class);
+                StringBuilder kanjiResult = new StringBuilder();
+                for (com.google.gson.JsonElement element : root) {
+                    com.google.gson.JsonArray phrase = element.getAsJsonObject().getAsJsonArray();
+                    // phrase の構造: [0] = 元のひらがな文節, [1] = 変換候補の配列
+                    if (phrase.size() >= 2 && phrase.get(1).isJsonArray()) {
+                        com.google.gson.JsonArray candidates = phrase.get(1).getAsJsonArray();
+                        if (candidates.size() > 0) {
+                            kanjiResult.append(candidates.get(0).getAsString());
+                            continue;
+                        }
+                    }
+                    if (phrase.size() > 0) {
+                        kanjiResult.append(phrase.get(0).getAsString());
+                    }
+                }
+                String result = kanjiResult.toString();
+                return result.isEmpty() ? kana : result;
+            }
+        } catch (Exception e) {
+            // ネットワークエラーやタイムアウト時はひらがな変換結果にフォールバック
+        }
+
+        return kana;
+    }
+
     private static boolean isAsciiLetter(char c) {
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
     }

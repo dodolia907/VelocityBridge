@@ -16,7 +16,7 @@ By deploying multiple Velocity proxies in different locations (e.g. Nagoya, Osak
 
 - **Shared backends** — Every proxy forwards to the same Paper/Folia backend servers, so players see the same game world regardless of which proxy they entered through.
 - **Global player registry** — All proxies aggregate their online players through a leader proxy; `show-max-players` and `/vb list` reflect the whole network.
-- **Cross-proxy chat** — Players on different proxies chat together as one network, with LunaChat-style romaji-to-Japanese auto-conversion (converted kana is shown in gold). The chat is relayed through the proxy so the backend only handles signed chat untouched.
+- **Cross-proxy chat** — Players on different proxies chat together as one network, with LunaChat-style romaji-to-Japanese conversion (converting Romaji -> Hiragana -> Kanji via Google CGI API for Japanese Input; converted text is shown in gold). The chat is relayed through the proxy so the backend only handles signed chat untouched.
 - **Cross-proxy transfer** — `/vb transfer` moves a player from one proxy to another using the Minecraft 1.20.5+ Transfer packet. The player is reconnected to the **same backend server** they were on (e.g. `main`), falling back to the default server if that name doesn't exist on the target proxy.
 - **Proxy latency probe** — `/vb proxies` shows every proxy's address, region, player count, and the latency measured from your current proxy, so players can choose the closest node.
 - **Discord integration** — The leader proxy can post chat, join/leave, and transfer events to a Discord channel via webhook (`discord` config section, leader-only posting).
