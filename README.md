@@ -4,6 +4,14 @@ VelocityBridge lets you run **multiple Velocity (Minecraft proxy) servers** at t
 
 Traditionally a Minecraft network had to use a single proxy. With VelocityBridge, multiple Velocity proxies can operate concurrently, and each proxy has its own public address. Players pick the closest one (or run `/vb proxies` to compare latency and `/vb transfer` to switch mid-session).
 
+## Motivation
+
+When providing Minecraft services across geographically distributed regions, using a single centralized Velocity proxy forces players to route all traffic through that single entry point—introducing unnecessary latency for both client-to-proxy and client-to-backend paths. 
+
+For instance, consider a user in Nagoya connecting to a backend server located in Nagoya. Under a single-proxy setup located in Osaka, the player's traffic must travel from Nagoya to Osaka just to pass through the proxy, before heading back to the Nagoya backend. 
+
+By deploying multiple Velocity proxies in different locations (e.g. Nagoya, Osaka, Tokyo, or global regions like US/Europe/Asia), players can connect to a local proxy. VelocityBridge coordinates these distributed proxies to seamlessly share the same backend server network, cross-proxy chat, and global player state—drastically reducing total end-to-end latency between the client and backend servers while maintaining a unified network experience.
+
 ## Highlights
 
 - **Shared backends** — Every proxy forwards to the same Paper/Folia backend servers, so players see the same game world regardless of which proxy they entered through.
