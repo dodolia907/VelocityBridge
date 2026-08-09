@@ -51,13 +51,49 @@ public record VelocityBridgeConfig(
     public record ProxyInfo(String id, String address, String region) {
     }
 
-    /** Discord WebHook 連携の設定。 */
-    public record DiscordConfig(String webhookUrl, String username, String avatarUrl,
-                                boolean notifyChat, boolean notifyJoinLeave, boolean notifyTransfer) {
-
-        /** WebHook URL が設定されていて有効か。 */
+    /** 個別の Discord WebHook 設定。 */
+    public record DiscordWebhookConfig(String webhookUrl, String username, String avatarUrl,
+                                      boolean notifyChat, boolean notifyJoinLeave, boolean notifyTransfer) {
         public boolean enabled() {
             return webhookUrl != null && !webhookUrl.isBlank();
+        }
+    }
+
+    /** Discord WebHook 連携の全体設定（複数の WebHook を登録可能）。 */
+    public record DiscordConfig(List<DiscordWebhookConfig> webhooks) {
+
+        public DiscordConfig(String webhookUrl, String username, String avatarUrl,
+                            boolean notifyChat, boolean notifyJoinLeave, boolean notifyTransfer) {
+            this(List.of(new DiscordWebhookConfig(webhookUrl, username, avatarUrl, notifyChat, notifyJoinLeave, notifyTransfer)));
+        }
+
+        /** いずれかの WebHook URL が設定されていて有効か。 */
+        public boolean enabled() {
+            return webhooks != null && webhooks.stream().anyMatch(DiscordWebhookConfig::enabled);
+        }
+
+        public String webhookUrl() {
+            return webhooks.isEmpty() ? "" : webhooks.get(0).webhookUrl();
+        }
+
+        public String username() {
+            return webhooks.isEmpty() ? "" : webhooks.get(0).username();
+        }
+
+        public String avatarUrl() {
+            return webhooks.isEmpty() ? "" : webhooks.get(0).avatarUrl();
+        }
+
+        public boolean notifyChat() {
+            return webhooks.stream().anyMatch(w -> w.enabled() && w.notifyChat());
+        }
+
+        public boolean notifyJoinLeave() {
+            return webhooks.stream().anyMatch(w -> w.enabled() && w.notifyJoinLeave());
+        }
+
+        public boolean notifyTransfer() {
+            return webhooks.stream().anyMatch(w -> w.enabled() && w.notifyTransfer());
         }
     }
 
@@ -131,20 +167,51 @@ public record VelocityBridgeConfig(
     }
 
     private static DiscordConfig loadDiscord(Map<String, Object> data) {
-        Map<String, Object> discord = new LinkedHashMap<>();
         Object discordObj = data.get("discord");
-        if (discordObj instanceof Map<?, ?> map) {
-            for (Map.Entry<?, ?> entry : map.entrySet()) {
-                discord.put(String.valueOf(entry.getKey()), entry.getValue());
+        if (!(discordObj instanceof Map<?, ?> map)) {
+            return new DiscordConfig(List.of());
+        }
+        Map<String, Object> discord = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            discord.put(String.valueOf(entry.getKey()), entry.getValue());
+        }
+
+        List<DiscordWebhookConfig> webhooks = new ArrayList<>();
+        Object webhooksObj = discord.get("webhooks");
+        if (webhooksObj instanceof List<?> list) {
+            for (Object item : list) {
+                if (item instanceof Map<?, ?> itemMap) {
+                    Map<String, Object> itemData = new LinkedHashMap<>();
+                    for (Map.Entry<?, ?> entry : itemMap.entrySet()) {
+                        itemData.put(String.valueOf(entry.getKey()), entry.getValue());
+                    }
+                    webhooks.add(new DiscordWebhookConfig(
+                            asString(itemData, "webhook-url", ""),
+                            asString(itemData, "username", asString(discord, "username", "VelocityBridge")),
+                            asString(itemData, "avatar-url", asString(discord, "avatar-url", "")),
+                            asBool(itemData, "notify-chat", true),
+                            asBool(itemData, "notify-join-leave", true),
+                            asBool(itemData, "notify-transfer", true)
+                    ));
+                }
             }
         }
-        return new DiscordConfig(
-                asString(discord, "webhook-url", ""),
-                asString(discord, "username", "VelocityBridge"),
-                asString(discord, "avatar-url", ""),
-                asBool(discord, "notify-chat", true),
-                asBool(discord, "notify-join-leave", true),
-                asBool(discord, "notify-transfer", true));
+
+        if (webhooks.isEmpty()) {
+            String singleUrl = asString(discord, "webhook-url", "");
+            if (!singleUrl.isBlank()) {
+                webhooks.add(new DiscordWebhookConfig(
+                        singleUrl,
+                        asString(discord, "username", "VelocityBridge"),
+                        asString(discord, "avatar-url", ""),
+                        asBool(discord, "notify-chat", true),
+                        asBool(discord, "notify-join-leave", true),
+                        asBool(discord, "notify-transfer", true)
+                ));
+            }
+        }
+
+        return new DiscordConfig(List.copyOf(webhooks));
     }
 
     private static ChatConfig loadChat(Map<String, Object> data) {

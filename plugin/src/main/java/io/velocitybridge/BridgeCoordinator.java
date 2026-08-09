@@ -55,7 +55,7 @@ public final class BridgeCoordinator {
     private final ChatRelay chatRelay;
     private final HubServer hubServer;
     private final HubClient hubClient;
-    private volatile DiscordHook discordHook;
+    private final List<DiscordHookEntry> discordHooks = new java.util.concurrent.CopyOnWriteArrayList<>();
     private volatile PermissionSync permissionSync;
     private final boolean leader;
     private final String nodeId;
@@ -95,13 +95,10 @@ public final class BridgeCoordinator {
                 config.secret(),
                 new FollowerHandler(serverNodeId));
         VelocityBridgeConfig.DiscordConfig discord = config.discord();
-        this.discordHook = leader && discord != null && discord.enabled()
-                ? new DiscordHook(discord.webhookUrl(), discord.username(), discord.avatarUrl())
-                : null;
-        if (discordHook != null) {
-            logger.info("Discord webhook enabled (chat={}, join-leave={}, transfer={})",
-                    discord.notifyChat(), discord.notifyJoinLeave(), discord.notifyTransfer());
-        }
+        setupDiscordHooks(discord);
+    }
+
+    private record DiscordHookEntry(DiscordHook hook, VelocityBridgeConfig.DiscordWebhookConfig config) {
     }
 
     /** ノードIDを返す。 */
@@ -198,9 +195,10 @@ public final class BridgeCoordinator {
         if (hubClient != null) {
             hubClient.close();
         }
-        if (discordHook != null) {
-            discordHook.close();
+        for (DiscordHookEntry entry : discordHooks) {
+            entry.hook().close();
         }
+        discordHooks.clear();
     }
 
     /**
@@ -234,15 +232,7 @@ public final class BridgeCoordinator {
         VelocityBridgeConfig.DiscordConfig oldDiscord = config.discord();
         VelocityBridgeConfig.DiscordConfig newDiscord = newConfig.discord();
         if (leader && !oldDiscord.equals(newDiscord)) {
-            DiscordHook previous = discordHook;
-            if (previous != null) {
-                previous.close();
-            }
-            discordHook = newDiscord.enabled()
-                    ? new DiscordHook(newDiscord.webhookUrl(), newDiscord.username(), newDiscord.avatarUrl())
-                    : null;
-            logger.info("Discord webhook updated (chat={}, join-leave={}, transfer={})",
-                    newDiscord.notifyChat(), newDiscord.notifyJoinLeave(), newDiscord.notifyTransfer());
+            setupDiscordHooks(newDiscord);
         }
 
         this.config = newConfig;
@@ -264,7 +254,7 @@ public final class BridgeCoordinator {
         if (leader) {
             registry.register(new GlobalPlayerRegistry.PlayerEntry(uniqueId, username, nodeId));
             hubServer.broadcast(Message.of(MessageType.PLAYER_JOIN, nodeId, payload), null);
-            postDiscord(config.discord().notifyJoinLeave(),
+            postDiscord(VelocityBridgeConfig.DiscordWebhookConfig::notifyJoinLeave,
                     discord -> discord.send(DiscordMessages.playerJoin(username, nodeId)));
         } else {
             registry.register(new GlobalPlayerRegistry.PlayerEntry(uniqueId, username, nodeId));
@@ -289,7 +279,7 @@ public final class BridgeCoordinator {
         if (leader) {
             registry.remove(uniqueId);
             hubServer.broadcast(Message.of(MessageType.PLAYER_LEAVE, nodeId, payload), null);
-            postDiscord(config.discord().notifyJoinLeave(),
+            postDiscord(VelocityBridgeConfig.DiscordWebhookConfig::notifyJoinLeave,
                     discord -> discord.send(DiscordMessages.playerLeave(username, nodeId)));
         } else {
             registry.remove(uniqueId);
@@ -351,7 +341,7 @@ public final class BridgeCoordinator {
 
         if (leader) {
             hubServer.broadcast(Message.of(MessageType.CHAT_MESSAGE, nodeId, payload), null);
-            postDiscord(config.discord().notifyChat(),
+            postDiscord(VelocityBridgeConfig.DiscordWebhookConfig::notifyChat,
                     discord -> discord.send(DiscordMessages.chat(username, message, kana)));
         } else {
             hubClient.send(Message.of(MessageType.CHAT_MESSAGE, nodeId, payload));
@@ -429,6 +419,49 @@ public final class BridgeCoordinator {
         return null;
     }
 
+    private void setupDiscordHooks(VelocityBridgeConfig.DiscordConfig discord) {
+        for (DiscordHookEntry entry : discordHooks) {
+            entry.hook().close();
+        }
+        discordHooks.clear();
+        if (leader && discord != null && discord.enabled() && discord.webhooks() != null) {
+            for (VelocityBridgeConfig.DiscordWebhookConfig w : discord.webhooks()) {
+                if (w.enabled()) {
+                    discordHooks.add(new DiscordHookEntry(
+                            new DiscordHook(w.webhookUrl(), w.username(), w.avatarUrl()),
+                            w));
+                }
+            }
+        }
+        if (!discordHooks.isEmpty()) {
+            logger.info("Discord webhooks enabled (count={})", discordHooks.size());
+        }
+    }
+
+    /**
+     * Leader のみ、設定された Discord WebHook へ通知を送信する。
+     *
+     * @param filter 投稿条件フィルター
+     * @param action 投稿処理
+     */
+    private void postDiscord(java.util.function.Predicate<VelocityBridgeConfig.DiscordWebhookConfig> filter,
+                             java.util.function.Consumer<DiscordHook> action) {
+        if (!leader) {
+            return;
+        }
+        for (DiscordHookEntry entry : discordHooks) {
+            if (entry.config().enabled() && filter.test(entry.config())) {
+                action.accept(entry.hook());
+            }
+        }
+    }
+
+    private void postDiscord(boolean enabled, java.util.function.Consumer<DiscordHook> action) {
+        if (enabled) {
+            postDiscord(w -> true, action);
+        }
+    }
+
     /** 指定プレイヤーが指定プロキシにオンラインか。 */
     private boolean isOnlineOn(String proxyId, UUID uniqueId) {
         for (GlobalPlayerRegistry.PlayerEntry entry : registry.snapshot()) {
@@ -464,35 +497,13 @@ public final class BridgeCoordinator {
     /** 転送結果を Discord へ投稿する（リーダーのみ）。 */
     private void postTransferResult(JsonObject payload, String sender) {
         String username = payload.has("username") ? payload.get("username").getAsString() : "?";
-        String target = payload.has("targetProxyId") ? payload.get("targetProxyId").getAsString() : "?";
+        String sourceProxyId = payload.has("sourceProxyId") ? payload.get("sourceProxyId").getAsString() : "?";
+        String targetProxyId = payload.has("targetProxyId") ? payload.get("targetProxyId").getAsString() : "?";
         String reason = payload.has("message") ? payload.get("message").getAsString() : "";
         boolean success = payload.has("success") && payload.get("success").getAsBoolean();
-        postDiscord(config.discord().notifyTransfer(), discord -> discord.send(success
-                ? DiscordMessages.transferSuccess(username, sender, target)
-                : DiscordMessages.transferFailure(username, target, reason)));
-    }
-
-    /** フォロワーがリーダーへ接続済みか。 */
-    public boolean isHubConnected() {
-        return leader || (hubClient != null && hubClient.isConnected());
-    }
-
-    /**
-     * リーダーのみ WebHook 投稿を実行する。
-     *
-     * <p>投稿をキューに積むだけなので、ネットワークイベント処理をブロックしない。</p>
-     *
-     * @param enabled イベント種別ごとの投稿許可設定
-     * @param action  投稿処理
-     */
-    private void postDiscord(boolean enabled, java.util.function.Consumer<DiscordHook> action) {
-        if (!enabled) {
-            return;
-        }
-        DiscordHook hook = this.discordHook;
-        if (hook != null) {
-            action.accept(hook);
-        }
+        postDiscord(VelocityBridgeConfig.DiscordWebhookConfig::notifyTransfer, discord -> discord.send(success
+                ? DiscordMessages.transferSuccess(username, sourceProxyId, targetProxyId)
+                : DiscordMessages.transferFailure(username, targetProxyId, reason)));
     }
 
     /** 他プロキシからの権限変更の差分をローカルに適用する。 */
@@ -637,7 +648,7 @@ public final class BridgeCoordinator {
             registry.register(new GlobalPlayerRegistry.PlayerEntry(join.uuid(), join.username(), sender));
             hubServer.broadcast(Message.of(MessageType.PLAYER_JOIN, sender, message.payload()), sender);
             notifyListener(sender, message);
-            postDiscord(config.discord().notifyJoinLeave(),
+            postDiscord(VelocityBridgeConfig.DiscordWebhookConfig::notifyJoinLeave,
                     discord -> discord.send(DiscordMessages.playerJoin(join.username(), sender)));
         }
 
@@ -647,7 +658,7 @@ public final class BridgeCoordinator {
             hubServer.broadcast(Message.of(MessageType.PLAYER_LEAVE, sender, message.payload()), sender);
             notifyListener(sender, message);
             String username = leave.username() != null ? leave.username() : "?";
-            postDiscord(config.discord().notifyJoinLeave(),
+            postDiscord(VelocityBridgeConfig.DiscordWebhookConfig::notifyJoinLeave,
                     discord -> discord.send(DiscordMessages.playerLeave(username, sender)));
         }
 
@@ -678,7 +689,7 @@ public final class BridgeCoordinator {
             hubServer.broadcast(Message.of(MessageType.CHAT_MESSAGE, sender, message.payload()), sender);
             chatRelay.onRemoteChat(sender, chat.username(), chat.message(), kanaOf(message.payload()));
             notifyListener(sender, message);
-            postDiscord(config.discord().notifyChat(),
+            postDiscord(VelocityBridgeConfig.DiscordWebhookConfig::notifyChat,
                     discord -> discord.send(DiscordMessages.chat(chat.username(), chat.message(), kanaOf(message.payload()))));
         }
 
@@ -719,7 +730,7 @@ public final class BridgeCoordinator {
                 payload.addProperty("proxyId", nodeId);
                 payload.addProperty("username", entry.username());
                 hubServer.broadcast(Message.of(MessageType.PLAYER_LEAVE, nodeId, payload), nodeId);
-                postDiscord(config.discord().notifyJoinLeave(),
+                postDiscord(VelocityBridgeConfig.DiscordWebhookConfig::notifyJoinLeave,
                         discord -> discord.send(DiscordMessages.playerLeave(entry.username(), nodeId)));
             }
         }
