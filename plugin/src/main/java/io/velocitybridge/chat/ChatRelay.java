@@ -68,22 +68,12 @@ public class ChatRelay {
      * @param senderUuid    除外する送信者UUID（null なら除外しない）
      */
     public void onRemoteChat(String senderProxyId, String username, String message, String kana, UUID senderUuid) {
-        if (kana != null && !kana.isEmpty()) {
-            Component noticeComponent = formatConversionNotice(kana);
-            for (Player player : proxy.getAllPlayers()) {
-                if (senderUuid != null && senderUuid.equals(player.getUniqueId())) {
-                    continue;
-                }
-                player.sendMessage(noticeComponent);
+        Component component = format(username, message, kana);
+        for (Player player : proxy.getAllPlayers()) {
+            if (senderUuid != null && senderUuid.equals(player.getUniqueId())) {
+                continue;
             }
-        } else {
-            Component component = format(username, message, kana);
-            for (Player player : proxy.getAllPlayers()) {
-                if (senderUuid != null && senderUuid.equals(player.getUniqueId())) {
-                    continue;
-                }
-                player.sendMessage(component);
-            }
+            player.sendMessage(component);
         }
     }
 
