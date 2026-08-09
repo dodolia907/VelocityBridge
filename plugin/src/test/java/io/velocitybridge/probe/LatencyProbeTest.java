@@ -47,14 +47,29 @@ class LatencyProbeTest {
     @Test
     void skipsProxiesWithMalformedAddress() throws Exception {
         try (LatencyProbe probe = new LatencyProbe(List.of(
-                new VelocityBridgeConfig.ProxyInfo("no-port", "127.0.0.1", ""),
                 new VelocityBridgeConfig.ProxyInfo("bad-port", "127.0.0.1:not-a-number", "")))) {
             probe.probeAll();
 
             Thread.sleep(300);
             // 不正アドレスのプロキシは例外で止めず UNREACHABLE として保持される
-            assertEquals(LatencyProbe.UNREACHABLE, probe.rtt("no-port"));
             assertEquals(LatencyProbe.UNREACHABLE, probe.rtt("bad-port"));
         }
+    }
+
+    @Test
+    void parseAddressDefaultsToPort25565() {
+        assertEquals(25565, LatencyProbe.parseAddress("mc.example.com").getPort());
+        assertEquals("mc.example.com", LatencyProbe.parseAddress("mc.example.com").getHostString());
+    }
+
+    @Test
+    void parseAddressKeepsExplicitPort() {
+        assertEquals(25566, LatencyProbe.parseAddress("mc.example.com:25566").getPort());
+    }
+
+    @Test
+    void parseAddressRejectsInvalidPort() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> LatencyProbe.parseAddress("mc.example.com:not-a-number"));
     }
 }

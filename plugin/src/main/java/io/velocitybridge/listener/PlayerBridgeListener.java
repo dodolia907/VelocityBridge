@@ -4,6 +4,7 @@ import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.connection.PostLoginEvent;
 import com.velocitypowered.api.event.player.PlayerChatEvent;
+import com.velocitypowered.api.event.player.PlayerChooseInitialServerEvent;
 import com.velocitypowered.api.proxy.Player;
 import io.velocitybridge.BridgeCoordinator;
 import io.velocitybridge.chat.ChatRelay;
@@ -31,6 +32,11 @@ public final class PlayerBridgeListener {
     public void onPostLogin(PostLoginEvent event) {
         Player player = event.getPlayer();
         coordinator.onPlayerJoin(player.getUniqueId(), player.getUsername());
+    }
+
+    @Subscribe
+    public void onChooseInitialServer(PlayerChooseInitialServerEvent event) {
+        coordinator.onPlayerChooseInitialServer(event);
     }
 
     @Subscribe

@@ -149,9 +149,11 @@ proxies:
 
 > The `proxies` list is used by `/vb transfer` to resolve target addresses and by `/vb proxies` for display, so **all nodes must share the same list**.
 
-> **Important for `/vb transfer`:** each `address` must be resolvable by the player's *client* (not just by the proxies). Use public hostnames or public IPs, never private IPs — the address is sent to the client in the Transfer packet and the client connects to it directly.
+> **Important for `/vb transfer`:** each `address` must be resolvable by the player's *client* (not just by the proxies). Use public hostnames or public IPs, never private IPs — the address is sent to the client in the Transfer packet and the client connects to it directly. The port is optional and defaults to `25565` (e.g. `address: "jp.play.example.com"` equals `address: "jp.play.example.com:25565"`).
 
 > The plugin reads the hub secret from `forwarding.secret` in its data directory. If missing, it generates a random one — that would **break inter-proxy auth**, so make sure the same secret file is present on every node (the same content as `forwarding-secret-file`).
+
+> **Preserving the backend server across transfer:** when `/vb transfer` moves a player, the target proxy reconnects them to the **same backend server** they were on (e.g. `main`) via the Transfer packet + `PlayerChooseInitialServerEvent`. The backend server is looked up **by name** on the target proxy, so all proxies must register servers under the same names. If the name doesn't exist on the target, the player falls back to the default server. The preserved-server hint expires after 60 seconds, so a failed/slow transfer simply lands the player in the default server.
 
 > **Discord (leader only):** only the leader posts to the webhook. Configure the `discord` section on the leader; followers ignore it. Chat posts include the converted kana when romaji conversion was applied. See [section 3.7](#37-discord-webhook-integration).
 

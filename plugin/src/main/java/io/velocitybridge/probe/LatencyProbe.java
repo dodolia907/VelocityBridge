@@ -101,13 +101,14 @@ public final class LatencyProbe implements Closeable {
         return new ConcurrentHashMap<>(rtts);
     }
 
-    private static InetSocketAddress parseAddress(String address) {
-        String[] parts = address.split(":");
-        if (parts.length != 2 || parts[1].isEmpty()) {
-            throw new IllegalArgumentException("Invalid proxy address (expected host:port): " + address);
+    static InetSocketAddress parseAddress(String address) {
+        int colon = address.lastIndexOf(':');
+        if (colon == -1) {
+            return new InetSocketAddress(address, 25565);
         }
         try {
-            return new InetSocketAddress(parts[0], Integer.parseInt(parts[1]));
+            return new InetSocketAddress(address.substring(0, colon),
+                    Integer.parseInt(address.substring(colon + 1)));
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException("Invalid proxy port in address: " + address);
         }

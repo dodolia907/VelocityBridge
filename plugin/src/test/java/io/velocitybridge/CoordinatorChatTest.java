@@ -14,6 +14,8 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -129,6 +131,62 @@ class CoordinatorChatTest {
         } finally {
             discord.stop(0);
         }
+    }
+
+    @Test
+    void parseAddressDefaultsToPort25565() {
+        assertEquals(25565, BridgeCoordinator.parseAddress("mc.example.com").getPort());
+        assertEquals("mc.example.com", BridgeCoordinator.parseAddress("mc.example.com").getHostString());
+        assertEquals(25566, BridgeCoordinator.parseAddress("mc.example.com:25566").getPort());
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> BridgeCoordinator.parseAddress("mc.example.com:not-a-number"));
+    }
+
+    @Test
+    void transferTargetPreservesBackendServerOnTargetProxy() throws Exception {
+        startTwoNodes();
+
+        UUID uuid = UUID.randomUUID();
+        JsonObject payload = new JsonObject();
+        payload.addProperty("uuid", uuid.toString());
+        payload.addProperty("username", "Alice");
+        payload.addProperty("sourceProxyId", "proxy-2");
+        payload.addProperty("targetProxyId", "proxy-1");
+        payload.addProperty("address", "127.0.0.1:25566");
+        payload.addProperty("server", "main");
+        payload.addProperty("success", true);
+        payload.addProperty("message", "ok");
+
+        follower.getHubClient().send(
+                io.velocitybridge.hub.Message.of(io.velocitybridge.hub.MessageType.TRANSFER_RESPONSE, "proxy-2", payload));
+
+        assertTrue(awaitUntil(() -> leader.takePendingServer(uuid).equals(Optional.of("main"))),
+                "target proxy should record the preserved server for the transferred player");
+        assertEquals(Optional.empty(), leader.takePendingServer(uuid),
+                "pending server should be consumed once");
+    }
+
+    @Test
+    void transferTargetIgnoresResponsesForOtherProxies() throws Exception {
+        startTwoNodes();
+
+        UUID uuid = UUID.randomUUID();
+        JsonObject payload = new JsonObject();
+        payload.addProperty("uuid", uuid.toString());
+        payload.addProperty("username", "Alice");
+        payload.addProperty("sourceProxyId", "proxy-2");
+        payload.addProperty("targetProxyId", "proxy-9");
+        payload.addProperty("address", "127.0.0.1:25569");
+        payload.addProperty("server", "main");
+        payload.addProperty("success", true);
+        payload.addProperty("message", "ok");
+
+        follower.getHubClient().send(
+                io.velocitybridge.hub.Message.of(io.velocitybridge.hub.MessageType.TRANSFER_RESPONSE, "proxy-2", payload));
+
+        Thread.sleep(300);
+        assertEquals(Optional.empty(), leader.takePendingServer(uuid),
+                "a response addressed to another proxy must not be recorded");
     }
 
     private void startTwoNodes() throws Exception {

@@ -206,6 +206,7 @@ public record VelocityBridgeConfig(
 
                 # Backend proxies (all proxies share the same definitions)
                 # address must be resolvable by clients for /vb transfer.
+                # Port is optional (defaults to 25565).
                 proxies:
                   - id: "proxy-1"
                     address: "127.0.0.1:25565"

@@ -3,8 +3,12 @@ package io.velocitybridge;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.velocitypowered.api.event.player.PlayerChooseInitialServerEvent;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
+import com.velocitypowered.api.proxy.ServerConnection;
+import com.velocitypowered.api.proxy.server.RegisteredServer;
+import com.velocitypowered.api.proxy.server.ServerInfo;
 import io.velocitybridge.chat.ChatRelay;
 import io.velocitybridge.config.VelocityBridgeConfig;
 import io.velocitybridge.discord.DiscordHook;
@@ -25,7 +29,11 @@ import org.slf4j.LoggerFactory;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
@@ -57,7 +65,13 @@ public final class BridgeCoordinator {
     /** フォロワーが適用済みの権限バージョン。 */
     private final AtomicLong appliedPermissionVersion = new AtomicLong();
 
+    /** 転送中プレイヤーが移動先プロキシで接続すべきサーバーの保留リスト（UUID → サーバー名）。 */
+    private final Map<UUID, PendingTransfer> pendingTransfers = new ConcurrentHashMap<>();
+
     private BiConsumer<String, JsonObject> messageListener;
+
+    /** 転送先サーバー情報の有効期限。これを過ぎると既定サーバーへ案内する。 */
+    private static final long TRANSFER_PENDING_TTL_NANOS = TimeUnit.SECONDS.toNanos(60);
 
     /**
      * @param proxy    プロキシサーバ（プレイヤーの転送に使用）
@@ -76,7 +90,7 @@ public final class BridgeCoordinator {
         this.hubServer = leader ? new HubServer(new LeaderHandler(), new AuthHandler(config.secret()), nodeId) : null;
         this.hubClient = leader ? null : new HubClient(
                 nodeId,
-                parseAddress(config.leaderAddress()),
+                parseAddress(config.leaderAddress(), config.hubPort()),
                 config.secret(),
                 new FollowerHandler(serverNodeId));
         VelocityBridgeConfig.DiscordConfig discord = config.discord();
@@ -375,6 +389,10 @@ public final class BridgeCoordinator {
         }
 
         InetSocketAddress address = parseAddress(target.address());
+        String currentServer = player.getCurrentServer()
+                .map(ServerConnection::getServerInfo)
+                .map(ServerInfo::getName)
+                .orElse("");
         logger.info("Transferring {} ({}) from {} to {} ({})",
                 player.getUsername(), uniqueId, nodeId, targetProxyId, target.address());
         try {
@@ -385,7 +403,8 @@ public final class BridgeCoordinator {
             return;
         }
 
-        broadcastTransferResponse(uniqueId, player.getUsername(), targetProxyId, target.address(), true, "ok");
+        broadcastTransferResponse(uniqueId, player.getUsername(), targetProxyId, target.address(),
+                currentServer, true, "ok");
         onResult.accept(true, "Transferring " + player.getUsername() + " to "
                 + targetProxyId + " (" + address + ")");
     }
@@ -412,13 +431,14 @@ public final class BridgeCoordinator {
 
     /** 転送結果をネットワーク全体へ配信する。 */
     private void broadcastTransferResponse(UUID uniqueId, String username, String targetProxyId,
-                                           String address, boolean success, String message) {
+                                           String address, String server, boolean success, String message) {
         JsonObject payload = new JsonObject();
         payload.addProperty("uuid", uniqueId.toString());
         payload.addProperty("username", username);
         payload.addProperty("sourceProxyId", nodeId);
         payload.addProperty("targetProxyId", targetProxyId);
         payload.addProperty("address", address);
+        payload.addProperty("server", server);
         payload.addProperty("success", success);
         payload.addProperty("message", message);
 
@@ -543,9 +563,24 @@ public final class BridgeCoordinator {
         }
     }
 
-    private static InetSocketAddress parseAddress(String address) {
-        String[] parts = address.split(":");
-        return new InetSocketAddress(parts[0], Integer.parseInt(parts[1]));
+    /** Minecraft の既定ポート。 */
+    private static final int DEFAULT_PORT = 25565;
+
+    static InetSocketAddress parseAddress(String address) {
+        return parseAddress(address, DEFAULT_PORT);
+    }
+
+    private static InetSocketAddress parseAddress(String address, int defaultPort) {
+        int colon = address.lastIndexOf(':');
+        if (colon == -1) {
+            return new InetSocketAddress(address, defaultPort);
+        }
+        try {
+            return new InetSocketAddress(address.substring(0, colon),
+                    Integer.parseInt(address.substring(colon + 1)));
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Invalid port in address: " + address);
+        }
     }
 
     /** リーダー側のハブイベントハンドラ。 */
@@ -627,6 +662,7 @@ public final class BridgeCoordinator {
                 case MessageType.TRANSFER_RESPONSE -> {
                     hubServer.broadcast(Message.of(MessageType.TRANSFER_RESPONSE, sender, message.payload()), sender);
                     logger.info("Transfer result from {}: {}", sender, summarizeTransfer(message.payload()));
+                    recordTransferTarget(message.payload());
                     notifyListener(sender, message);
                     postTransferResult(message.payload(), sender);
                 }
@@ -735,6 +771,7 @@ public final class BridgeCoordinator {
                 }
                 case MessageType.TRANSFER_RESPONSE -> {
                     logger.info("Transfer result from {}: {}", nodeId, summarizeTransfer(message.payload()));
+                    recordTransferTarget(message.payload());
                     notifyListener(message);
                 }
                 case MessageType.PERMISSION_UPDATE -> {
@@ -800,6 +837,92 @@ public final class BridgeCoordinator {
     /** チャットペイロードからカナを取り出す（無ければ空文字）。 */
     private static String kanaOf(JsonObject payload) {
         return payload.has("kana") ? payload.get("kana").getAsString() : "";
+    }
+
+    /**
+     * 転送先プロキシが、移動してくるプレイヤーの接続先サーバーを引き継ぐための保留を登録する。
+     *
+     * <p>転送元が送った {@code TRANSFER_RESPONSE} から、自ノード宛かつ成功したものだけを対象に、
+     * UUID → サーバー名を記録する。プレイヤーがこのプロキシへログインしたとき
+     * {@link #onPlayerChooseInitialServer(PlayerChooseInitialServerEvent)} がこれを消費する。</p>
+     *
+     * @param payload TRANSFER_RESPONSE のペイロード
+     */
+    private void recordTransferTarget(JsonObject payload) {
+        if (!payload.has("success") || !payload.get("success").getAsBoolean()) {
+            return;
+        }
+        String target = payload.has("targetProxyId") ? payload.get("targetProxyId").getAsString() : "";
+        if (!nodeId.equals(target)) {
+            return;
+        }
+        String server = payload.has("server") ? payload.get("server").getAsString() : "";
+        if (server.isEmpty()) {
+            return;
+        }
+        UUID uuid;
+        try {
+            uuid = UUID.fromString(payload.get("uuid").getAsString());
+        } catch (RuntimeException e) {
+            logger.warn("Malformed transfer response uuid: {}", payload.get("uuid"));
+            return;
+        }
+        pendingTransfers.put(uuid, new PendingTransfer(server, System.nanoTime()));
+        logger.info("Preserving server {} for transferred player {}", server, uuid);
+    }
+
+    /**
+     * 転送で移動してきたプレイヤーの初期接続先を、転送元と同じバックエンドサーバーにする。
+     *
+     * <p>自ノード宛の転送が保留されていれば {@link PlayerChooseInitialServerEvent} で
+     * サーバーを差し替える。保留が無い・期限切れ・対象サーバーが存在しない場合は既定の
+     * 接続先（ロビー等）へフォールバックする。</p>
+     *
+     * @param event 初期接続先選択イベント
+     */
+    public void onPlayerChooseInitialServer(PlayerChooseInitialServerEvent event) {
+        Player player = event.getPlayer();
+        Optional<String> server = takePendingServer(player.getUniqueId());
+        if (server.isEmpty() || proxy == null) {
+            return;
+        }
+        Optional<RegisteredServer> target = proxy.getServer(server.get());
+        if (target.isEmpty()) {
+            logger.warn("Preserved server {} for transferred player {} not found on this proxy; "
+                    + "falling back to default", server.get(), player.getUsername());
+            return;
+        }
+        logger.info("Connecting transferred player {} to preserved server {}",
+                player.getUsername(), server.get());
+        event.setInitialServer(target.get());
+    }
+
+    /**
+     * 転送で移動してきたプレイヤーの保留サーバーを取り出す（消費する）。
+     *
+     * <p>保留が無い・サーバー名が空・期限切れの場合は {@link Optional#empty()} を返す。</p>
+     *
+     * @param uniqueId プレイヤーUUID
+     * @return 保留されたサーバー名
+     */
+    Optional<String> takePendingServer(UUID uniqueId) {
+        PendingTransfer pending = pendingTransfers.remove(uniqueId);
+        if (pending == null || pending.server.isEmpty()
+                || System.nanoTime() - pending.createdAt > TRANSFER_PENDING_TTL_NANOS) {
+            return Optional.empty();
+        }
+        return Optional.of(pending.server);
+    }
+
+    /** 転送先サーバーの保留エントリ。 */
+    private static final class PendingTransfer {
+        final String server;
+        final long createdAt;
+
+        PendingTransfer(String server, long createdAt) {
+            this.server = server;
+            this.createdAt = createdAt;
+        }
     }
 
     /** 転送関連メッセージのペイロードをログ用に要約する。 */
