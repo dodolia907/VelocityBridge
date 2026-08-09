@@ -244,9 +244,19 @@ public final class RomajiConverter {
             return kana;
         }
 
+        // 漢字変換用プレプロセス:
+        // 1. 助詞の「わ」 (単語間の孤立した「わ」) を「は」に補正
+        // 2. 句読点を全角に変換 (. -> 。, , -> 、)
+        // 3. かな間のスペースを除去して文節変換精度を向上
+        String apiInput = kana
+                .replaceAll("(?<=\\s|^)わ(?=\\s|[.,!?]|$)", "は")
+                .replace(".", "。")
+                .replace(",", "、")
+                .replaceAll("(?<=[\\u3040-\\u309F\\u30A0-\\u30FF\\u4E00-\\u9FFF。、！？])\\s+(?=[\\u3040-\\u309F\\u30A0-\\u30FF\\u4E00-\\u9FFF。、！？])", "");
+
         try {
-            String encodedKana = java.net.URLEncoder.encode(kana, java.nio.charset.StandardCharsets.UTF_8);
-            String url = "http://www.google.com/transliterate?langpair=ja-Hira|ja&text=" + encodedKana;
+            String encodedKana = java.net.URLEncoder.encode(apiInput, java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20");
+            String url = "http://www.google.com/transliterate?langpair=ja-Hira%7Cja&text=" + encodedKana;
 
             java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
                     .uri(java.net.URI.create(url))

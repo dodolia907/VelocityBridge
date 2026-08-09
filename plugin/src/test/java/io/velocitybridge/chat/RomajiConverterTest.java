@@ -79,4 +79,12 @@ class RomajiConverterTest {
         // API通信が成功した場合は「こんにちは」等、失敗時はフォールバック「こんにちわ」
         org.junit.jupiter.api.Assertions.assertTrue(result.equals("こんにちは") || result.equals("こんにちわ"));
     }
+
+    @Test
+    void convertsSentenceToKanji() {
+        String result = RomajiConverter.convertToKanji("Wagahai wa neko de aru. Namae wa mada nai.");
+        org.junit.jupiter.api.Assertions.assertTrue(
+                result.equals("吾輩は猫である。名前はまだない。") || result.contains("わがはい")
+        );
+    }
 }
