@@ -21,13 +21,17 @@ public final class PlayerBridgeListener {
 
     private final BridgeCoordinator coordinator;
     private final ChatRelay chatRelay;
+    private final com.velocitypowered.api.proxy.ProxyServer proxy;
     private final Set<UUID> romajiModeDisabled = ConcurrentHashMap.newKeySet();
     private final io.velocitybridge.tab.TabListManager tabListManager;
 
-    public PlayerBridgeListener(BridgeCoordinator coordinator, ChatRelay chatRelay, io.velocitybridge.tab.TabListManager tabListManager) {
+    public PlayerBridgeListener(BridgeCoordinator coordinator, ChatRelay chatRelay,
+                                io.velocitybridge.tab.TabListManager tabListManager,
+                                com.velocitypowered.api.proxy.ProxyServer proxy) {
         this.coordinator = coordinator;
         this.chatRelay = chatRelay;
         this.tabListManager = tabListManager;
+        this.proxy = proxy;
     }
 
     @Subscribe
@@ -40,9 +44,17 @@ public final class PlayerBridgeListener {
     }
 
     @Subscribe
-    public void onServerConnected(com.velocitypowered.api.event.player.ServerConnectedEvent event) {
+    public void onServerPostConnect(com.velocitypowered.api.event.player.ServerPostConnectEvent event) {
         if (tabListManager != null) {
-            tabListManager.updateAll();
+            // バックエンドサーバーが PlayerInfo パケットを送信し TabList が確定するまで少し待つ
+            Object plugin = proxy.getPluginManager().getPlugin("velocitybridge")
+                    .flatMap(c -> c.getInstance()).orElse(null);
+            if (plugin != null) {
+                proxy.getScheduler()
+                        .buildTask(plugin, () -> tabListManager.updateAll())
+                        .delay(500, java.util.concurrent.TimeUnit.MILLISECONDS)
+                        .schedule();
+            }
         }
     }
 

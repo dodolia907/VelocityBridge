@@ -69,7 +69,7 @@ public final class VelocityBridgePlugin {
             coordinator = new BridgeCoordinator(proxy, config, chatRelay, serverNodeId);
 
             io.velocitybridge.tab.TabListManager tabListManager = new io.velocitybridge.tab.TabListManager(proxy, coordinator);
-            PlayerBridgeListener listener = new PlayerBridgeListener(coordinator, chatRelay, tabListManager);
+            PlayerBridgeListener listener = new PlayerBridgeListener(coordinator, chatRelay, tabListManager, proxy);
             coordinator.setMessageListener((sender, payload) -> {
                 tabListManager.updateAll();
             });
