@@ -38,47 +38,37 @@ public class TabListManager {
     /**
      * 特定のプレイヤーの TabList 表示を更新する。
      */
-    public void updateForPlayer(Player player) {
+    public void updateForPlayer(Player viewer) {
         Collection<GlobalPlayerRegistry.PlayerEntry> entries = coordinator.getRegistry().snapshot();
         Set<UUID> globalPlayerUuids = new HashSet<>();
 
         for (GlobalPlayerRegistry.PlayerEntry entry : entries) {
             globalPlayerUuids.add(entry.uniqueId());
 
-            boolean isLocal = coordinator.getNodeId().equals(entry.proxyId());
-            NamedTextColor color = isLocal ? NamedTextColor.GREEN : NamedTextColor.GRAY;
+            boolean isLocalNode = coordinator.getNodeId().equals(entry.proxyId());
+            NamedTextColor color = isLocalNode ? NamedTextColor.GREEN : NamedTextColor.GRAY;
 
             Component displayName = Component.text("[" + entry.proxyId() + "] ", color)
                     .append(Component.text(entry.username(), NamedTextColor.WHITE));
 
-            // ローカルプレイヤーの場合
-            if (isLocal) {
-                proxy.getPlayer(entry.uniqueId()).ifPresent(targetPlayer -> {
-                    targetPlayer.getTabList().getEntry(entry.uniqueId()).ifPresent(tabEntry -> {
-                        tabEntry.setDisplayName(displayName);
-                    });
+            if (viewer.getUniqueId().equals(entry.uniqueId()) || viewer.getTabList().containsEntry(entry.uniqueId())) {
+                viewer.getTabList().getEntry(entry.uniqueId()).ifPresent(tabEntry -> {
+                    tabEntry.setDisplayName(displayName);
                 });
             } else {
-                // リモートプレイヤーの場合、TabList にエントリーを追加・更新する
-                if (!player.getTabList().containsEntry(entry.uniqueId())) {
-                    TabListEntry newEntry = TabListEntry.builder()
-                            .tabList(player.getTabList())
-                            .profile(new com.velocitypowered.api.util.GameProfile(entry.uniqueId(), entry.username(), java.util.List.of()))
-                            .displayName(displayName)
-                            .build();
-                    player.getTabList().addEntry(newEntry);
-                } else {
-                    player.getTabList().getEntry(entry.uniqueId()).ifPresent(tabEntry -> {
-                        tabEntry.setDisplayName(displayName);
-                    });
-                }
+                TabListEntry newEntry = TabListEntry.builder()
+                        .tabList(viewer.getTabList())
+                        .profile(new com.velocitypowered.api.util.GameProfile(entry.uniqueId(), entry.username(), java.util.List.of()))
+                        .displayName(displayName)
+                        .build();
+                viewer.getTabList().addEntry(newEntry);
             }
         }
 
-        // 切断したリモートプレイヤーの TabList エントリーを削除する
-        for (TabListEntry existing : player.getTabList().getEntries()) {
+        // ネットワーク上に存在しなくなったエントリを削除
+        for (TabListEntry existing : viewer.getTabList().getEntries()) {
             if (!globalPlayerUuids.contains(existing.getProfile().getId())) {
-                player.getTabList().removeEntry(existing.getProfile().getId());
+                viewer.getTabList().removeEntry(existing.getProfile().getId());
             }
         }
     }

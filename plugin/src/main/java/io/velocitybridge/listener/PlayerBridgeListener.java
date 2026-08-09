@@ -40,6 +40,13 @@ public final class PlayerBridgeListener {
     }
 
     @Subscribe
+    public void onServerConnected(com.velocitypowered.api.event.player.ServerConnectedEvent event) {
+        if (tabListManager != null) {
+            tabListManager.updateAll();
+        }
+    }
+
+    @Subscribe
     public void onChooseInitialServer(PlayerChooseInitialServerEvent event) {
         coordinator.onPlayerChooseInitialServer(event);
     }
