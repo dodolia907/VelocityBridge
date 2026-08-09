@@ -1,5 +1,7 @@
 package io.velocitybridge;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
@@ -14,12 +16,17 @@ import io.velocitybridge.hub.HubServer;
 import io.velocitybridge.hub.Message;
 import io.velocitybridge.hub.MessageCodec;
 import io.velocitybridge.hub.MessageType;
+import io.velocitybridge.permission.PermissionBackend;
+import io.velocitybridge.permission.PermissionSync;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 
@@ -40,8 +47,15 @@ public final class BridgeCoordinator {
     private final HubServer hubServer;
     private final HubClient hubClient;
     private volatile DiscordHook discordHook;
+    private volatile PermissionSync permissionSync;
     private final boolean leader;
     private final String nodeId;
+
+    /** リーダーが発行する権限バージョン。 */
+    private final AtomicLong permissionVersion = new AtomicLong();
+
+    /** フォロワーが適用済みの権限バージョン。 */
+    private final AtomicLong appliedPermissionVersion = new AtomicLong();
 
     private BiConsumer<String, JsonObject> messageListener;
 
@@ -95,6 +109,16 @@ public final class BridgeCoordinator {
         return hubServer;
     }
 
+    /** テスト等で参照するための権限バージョン（リーダー）。 */
+    long getPermissionVersion() {
+        return permissionVersion.get();
+    }
+
+    /** テスト等で参照するための適用済み権限バージョン（フォロワー）。 */
+    long getAppliedPermissionVersion() {
+        return appliedPermissionVersion.get();
+    }
+
     /** リーダーへの接続クライアント（follower のみ）。 */
     public HubClient getHubClient() {
         return hubClient;
@@ -103,6 +127,37 @@ public final class BridgeCoordinator {
     /** プロキシ間メッセージ受信時のリスナーを設定する。 */
     public void setMessageListener(BiConsumer<String, JsonObject> listener) {
         this.messageListener = listener;
+    }
+
+    /** 権限同期ハンドラを設定する。 */
+    public void setPermissionSync(PermissionSync permissionSync) {
+        this.permissionSync = permissionSync;
+    }
+
+    /**
+     * ローカルの権限変更の差分をネットワーク全体へ配信する。
+     *
+     * <p>発端のプロキシでは既に権限が適用済み（イベント起因）のため、他プロキシへ
+     * 差分を伝えるだけでよい。リーダーは全フォロワーへブロードキャストし、フォロワーは
+     * リーダーへ送信する（リーダーが中継する）。</p>
+     *
+     * @param change 権限変更の差分
+     */
+    public void onPermissionChange(PermissionBackend.NodeChange change) {
+        JsonObject payload = new JsonObject();
+        payload.addProperty("holderType", change.holderType());
+        payload.addProperty("holderKey", change.holderKey());
+        payload.addProperty("node", change.node());
+        payload.addProperty("add", change.add());
+        payload.addProperty("value", change.value());
+
+        if (leader) {
+            // リーダーが発端の変更は、ここでバージョンを発行して全フォロワーへ配信する
+            payload.addProperty("version", permissionVersion.incrementAndGet());
+            hubServer.broadcast(Message.of(MessageType.PERMISSION_UPDATE, nodeId, payload), null);
+        } else {
+            hubClient.send(Message.of(MessageType.PERMISSION_UPDATE, nodeId, payload));
+        }
     }
 
     /** 起動する。 */
@@ -410,6 +465,84 @@ public final class BridgeCoordinator {
         }
     }
 
+    /** 他プロキシからの権限変更の差分をローカルに適用する。 */
+    private void handlePermissionUpdate(JsonObject payload) {
+        PermissionSync sync = permissionSync;
+        if (sync == null) {
+            return;
+        }
+        sync.onRemoteChange(new PermissionBackend.NodeChange(
+                payload.get("holderType").getAsString(),
+                payload.get("holderKey").getAsString(),
+                payload.get("node").getAsString(),
+                payload.get("add").getAsBoolean(),
+                payload.get("value").getAsBoolean()));
+    }
+
+    /** 権限のフル状態をスナップショットとして要求ノードへ送信する（リーダーのみ）。 */
+    private void sendPermissionSnapshot(String target) {
+        PermissionSync sync = permissionSync;
+        if (sync == null) {
+            return;
+        }
+        sync.snapshot().whenComplete((holders, error) -> {
+            if (error != null) {
+                logger.warn("Failed to build permission snapshot for {}: {}", target, error.toString());
+                return;
+            }
+            JsonObject payload = new JsonObject();
+            payload.addProperty("version", permissionVersion.get());
+            JsonArray holdersArray = new JsonArray();
+            for (PermissionBackend.HolderSnapshot holder : holders) {
+                JsonObject holderObject = new JsonObject();
+                holderObject.addProperty("holderType", holder.holderType());
+                holderObject.addProperty("holderKey", holder.holderKey());
+                JsonArray nodesArray = new JsonArray();
+                for (PermissionBackend.NodeValue node : holder.nodes()) {
+                    JsonObject nodeObject = new JsonObject();
+                    nodeObject.addProperty("node", node.node());
+                    nodeObject.addProperty("value", node.value());
+                    nodesArray.add(nodeObject);
+                }
+                holderObject.add("nodes", nodesArray);
+                holdersArray.add(holderObject);
+            }
+            payload.add("holders", holdersArray);
+            hubServer.sendTo(target, Message.of(MessageType.PERMISSION_SNAPSHOT, nodeId, payload));
+        });
+    }
+
+    /** 権限スナップショットをローカルに適用し、適用済みバージョンを記録する（フォロワーのみ）。 */
+    private void handlePermissionSnapshot(JsonObject payload) {
+        PermissionSync sync = permissionSync;
+        if (sync == null) {
+            return;
+        }
+        List<PermissionBackend.HolderSnapshot> holders = new ArrayList<>();
+        if (payload.has("holders") && payload.get("holders").isJsonArray()) {
+            for (JsonElement element : payload.getAsJsonArray("holders")) {
+                JsonObject holderObject = element.getAsJsonObject();
+                List<PermissionBackend.NodeValue> nodes = new ArrayList<>();
+                if (holderObject.has("nodes") && holderObject.get("nodes").isJsonArray()) {
+                    for (JsonElement nodeElement : holderObject.getAsJsonArray("nodes")) {
+                        JsonObject nodeObject = nodeElement.getAsJsonObject();
+                        nodes.add(new PermissionBackend.NodeValue(
+                                nodeObject.get("node").getAsString(),
+                                nodeObject.get("value").getAsBoolean()));
+                    }
+                }
+                holders.add(new PermissionBackend.HolderSnapshot(
+                        holderObject.get("holderType").getAsString(),
+                        holderObject.get("holderKey").getAsString(),
+                        nodes));
+            }
+        }
+        sync.applySnapshot(holders);
+        if (payload.has("version")) {
+            appliedPermissionVersion.set(payload.get("version").getAsLong());
+        }
+    }
+
     private static InetSocketAddress parseAddress(String address) {
         String[] parts = address.split(":");
         return new InetSocketAddress(parts[0], Integer.parseInt(parts[1]));
@@ -500,6 +633,20 @@ public final class BridgeCoordinator {
                 case MessageType.HEARTBEAT -> {
                     // ハートビートは HubServer が最終受信時刻を更新済み。追加処理なし。
                 }
+                case MessageType.PERMISSION_UPDATE -> {
+                    // フォロワー発端の変更は、リーダーがバージョンを発行して全フォロワーへ配信する
+                    message.payload().addProperty("version", permissionVersion.incrementAndGet());
+                    hubServer.broadcast(Message.of(MessageType.PERMISSION_UPDATE, sender, message.payload()), sender);
+                    handlePermissionUpdate(message.payload());
+                    notifyListener(sender, message);
+                }
+                case MessageType.PERMISSION_VERSION_REQUEST -> {
+                    JsonObject response = new JsonObject();
+                    response.addProperty("version", permissionVersion.get());
+                    hubServer.sendTo(sender, Message.of(MessageType.PERMISSION_VERSION_RESPONSE,
+                            BridgeCoordinator.this.nodeId, response));
+                }
+                case MessageType.PERMISSION_SNAPSHOT_REQUEST -> sendPermissionSnapshot(sender);
                 default -> {
                 }
             }
@@ -553,6 +700,11 @@ public final class BridgeCoordinator {
             }
             payload.add("players", array);
             hubClient.send(Message.of(MessageType.PLAYER_LIST_FULL, nodeId, payload));
+
+            // 権限の適用バージョンを問い合わせ、不足していればスナップショットで再同期する
+            JsonObject versionRequest = new JsonObject();
+            versionRequest.addProperty("appliedVersion", appliedPermissionVersion.get());
+            hubClient.send(Message.of(MessageType.PERMISSION_VERSION_REQUEST, nodeId, versionRequest));
         }
 
         @Override
@@ -585,6 +737,22 @@ public final class BridgeCoordinator {
                     logger.info("Transfer result from {}: {}", nodeId, summarizeTransfer(message.payload()));
                     notifyListener(message);
                 }
+                case MessageType.PERMISSION_UPDATE -> {
+                    handlePermissionUpdate(message.payload());
+                    if (message.payload().has("version")) {
+                        long version = message.payload().get("version").getAsLong();
+                        appliedPermissionVersion.accumulateAndGet(version, Math::max);
+                    }
+                }
+                case MessageType.PERMISSION_VERSION_RESPONSE -> {
+                    long serverVersion = message.payload().get("version").getAsLong();
+                    if (serverVersion > appliedPermissionVersion.get()) {
+                        // 適用済みより進んでいるため、フル状態を要求して再同期する
+                        hubClient.send(Message.of(MessageType.PERMISSION_SNAPSHOT_REQUEST,
+                                nodeId, MessageCodec.emptyPayload()));
+                    }
+                }
+                case MessageType.PERMISSION_SNAPSHOT -> handlePermissionSnapshot(message.payload());
                 default -> {
                 }
             }

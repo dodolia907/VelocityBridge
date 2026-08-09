@@ -35,6 +35,7 @@ import java.util.Map;
  * @param secret          ハブ認証シークレット
  * @param proxies         プロキシ定義
  * @param discord         Discord WebHook 連携設定
+ * @param chat            チャット配信設定
  */
 public record VelocityBridgeConfig(
         String nodeId,

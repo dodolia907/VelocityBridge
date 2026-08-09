@@ -17,6 +17,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <velocity.api.version>4.1.0-SNAPSHOT</velocity.api.version>
     <junit.version>5.10.2</junit.version>
+    <luckperms.api.version>5.5</luckperms.api.version>
   </properties>
 
   <repositories>
@@ -31,6 +32,13 @@
       <groupId>com.velocitypowered</groupId>
       <artifactId>velocity-api</artifactId>
       <version>${velocity.api.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>net.luckperms</groupId>
+      <artifactId>api</artifactId>
+      <version>${luckperms.api.version}</version>
       <scope>provided</scope>
     </dependency>
 

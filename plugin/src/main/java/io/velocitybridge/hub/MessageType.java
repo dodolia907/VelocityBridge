@@ -40,4 +40,19 @@ public final class MessageType {
 
     /** プロキシ切断を通知し、その配下のプレイヤーをクリーンアップする。 */
     public static final String DISCONNECT_PROXY = "DISCONNECT_PROXY";
+
+    /** 権限ノードの変更（LuckPerms 権限のプロキシ間同期。変更時点の差分のみ配信）。 */
+    public static final String PERMISSION_UPDATE = "PERMISSION_UPDATE";
+
+    /** 権限の適用バージョン問い合わせ（接続時にフォロワー→リーダー）。 */
+    public static final String PERMISSION_VERSION_REQUEST = "PERMISSION_VERSION_REQUEST";
+
+    /** 権限の最新バージョンの応答（リーダー→フォロワー）。 */
+    public static final String PERMISSION_VERSION_RESPONSE = "PERMISSION_VERSION_RESPONSE";
+
+    /** 権限フル状態の要求（バージョン不一致時にフォロワー→リーダー）。 */
+    public static final String PERMISSION_SNAPSHOT_REQUEST = "PERMISSION_SNAPSHOT_REQUEST";
+
+    /** 権限フル状態の配信（リーダー→フォロワー）。 */
+    public static final String PERMISSION_SNAPSHOT = "PERMISSION_SNAPSHOT";
 }

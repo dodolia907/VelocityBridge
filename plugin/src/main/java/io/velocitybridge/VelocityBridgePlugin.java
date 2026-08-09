@@ -16,6 +16,9 @@ import io.velocitybridge.command.VbProxiesCommand;
 import io.velocitybridge.config.VelocityBridgeConfig;
 import io.velocitybridge.listener.PlayerBridgeListener;
 import io.velocitybridge.listener.ServerPingListener;
+import io.velocitybridge.permission.LuckPermsBackend;
+import io.velocitybridge.permission.PermissionBackend;
+import io.velocitybridge.permission.PermissionSync;
 import io.velocitybridge.probe.LatencyProbe;
 import org.slf4j.Logger;
 
@@ -43,6 +46,8 @@ public final class VelocityBridgePlugin {
     private LatencyProbe latencyProbe;
     private VbProxiesCommand proxiesCommand;
     private VbCommand vbCommand;
+    private PermissionBackend permissionBackend;
+    private PermissionSync permissionSync;
 
     @Inject
     public VelocityBridgePlugin(ProxyServer proxy, Logger logger, @DataDirectory Path dataDirectory) {
@@ -69,6 +74,14 @@ public final class VelocityBridgePlugin {
             coordinator.start();
             proxy.getEventManager().register(this, listener);
             proxy.getEventManager().register(this, new ServerPingListener(coordinator.getRegistry()));
+
+            permissionBackend = LuckPermsBackend.tryCreate(logger);
+            if (permissionBackend != null) {
+                permissionSync = new PermissionSync(permissionBackend, coordinator::onPermissionChange);
+                coordinator.setPermissionSync(permissionSync);
+                permissionSync.start();
+                logger.info("Cross-proxy permission sync enabled (LuckPerms, diff-only)");
+            }
 
             latencyProbe = new LatencyProbe(config.proxies());
             latencyProbe.start();
@@ -131,6 +144,9 @@ public final class VelocityBridgePlugin {
         }
         if (latencyProbe != null) {
             latencyProbe.close();
+        }
+        if (permissionBackend != null) {
+            permissionBackend.close();
         }
         logger.info("VelocityBridge disabled");
     }

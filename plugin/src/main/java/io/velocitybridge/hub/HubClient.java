@@ -96,10 +96,13 @@ public final class HubClient implements Closeable {
     /**
      * メッセージをリーダーへ送信する。
      *
+     * <p>ハートビートスレッドやプラグインのイベントスレッドから並行して呼ばれるため、
+     * ソケットへの書き込みは同期化する。</p>
+     *
      * @param message 送信メッセージ
      * @return 送信に成功すれば {@code true}
      */
-    public boolean send(Message message) {
+    public synchronized boolean send(Message message) {
         OutputStream out = this.output;
         if (out == null || !connected) {
             return false;

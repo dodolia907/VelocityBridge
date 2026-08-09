@@ -13,6 +13,7 @@ Traditionally a Minecraft network had to use a single proxy. With VelocityBridge
 - **Proxy latency probe** — `/vb proxies` shows every proxy's address, region, player count, and the latency measured from your current proxy, so players can choose the closest node.
 - **Discord integration** — The leader proxy can post chat, join/leave, and transfer events to a Discord channel via webhook (`discord` config section, leader-only posting).
 - **Hot reload** — `/vb reload` applies Discord, chat, and proxy settings without a restart (node-id / mode / hub-port / leader-address / secret changes still require a restart).
+- **Cross-proxy permissions** — LuckPerms permission changes are synchronized across all proxies: diffs are broadcast when a change happens, and followers catch up via a version query + full snapshot on connect/reconnect.
 - **No extra infrastructure** — Inter-proxy communication uses a leader-type message hub over plain TCP. No Redis or database required.
 
 ## How it works

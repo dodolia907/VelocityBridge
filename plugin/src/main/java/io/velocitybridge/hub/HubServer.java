@@ -124,7 +124,7 @@ public final class HubServer implements Closeable {
             }
             Connection connection = e.getValue();
             try {
-                MessageCodec.write(connection.output, message);
+                connection.write(message);
             } catch (IOException ex) {
                 connection.close();
             }
@@ -144,7 +144,7 @@ public final class HubServer implements Closeable {
             return false;
         }
         try {
-            MessageCodec.write(connection.output, message);
+            connection.write(message);
             return true;
         } catch (IOException e) {
             connection.close();
@@ -201,7 +201,7 @@ public final class HubServer implements Closeable {
             // 認証応答 + リーダーのノードIDを通知
             JsonObject ok = new JsonObject();
             ok.addProperty("serverNodeId", serverNodeId);
-            MessageCodec.write(output, Message.of(MessageType.AUTH_OK, serverNodeId, ok));
+            connection.write(Message.of(MessageType.AUTH_OK, serverNodeId, ok));
 
             handler.onAuthenticated(nodeId);
 
@@ -275,6 +275,11 @@ public final class HubServer implements Closeable {
             this.input = input;
             this.output = output;
             this.lastRead = System.currentTimeMillis();
+        }
+
+        /** この接続へ1フレーム書き込む。複数スレッドからの書き込みを直列化する。 */
+        private synchronized void write(Message message) throws IOException {
+            MessageCodec.write(output, message);
         }
 
         private void close() {
