@@ -592,8 +592,27 @@ public final class BridgeCoordinator {
         }
     }
 
+    private interface MessageHandler {
+        void handle(String sender, Message message);
+    }
+
     /** リーダー側のハブイベントハンドラ。 */
     private final class LeaderHandler implements HubServer.Handler {
+        private final Map<String, MessageHandler> handlers = new ConcurrentHashMap<>();
+
+        LeaderHandler() {
+            handlers.put(MessageType.PLAYER_JOIN, this::handlePlayerJoin);
+            handlers.put(MessageType.PLAYER_LEAVE, this::handlePlayerLeave);
+            handlers.put(MessageType.PLAYER_LIST_FULL, this::handlePlayerListFull);
+            handlers.put(MessageType.CHAT_MESSAGE, this::handleChatMessage);
+            handlers.put(MessageType.TRANSFER_REQUEST, this::handleTransferRequest);
+            handlers.put(MessageType.TRANSFER_RESPONSE, this::handleTransferResponse);
+            handlers.put(MessageType.HEARTBEAT, (s, m) -> {});
+            handlers.put(MessageType.PERMISSION_UPDATE, this::handlePermissionUpdateMsg);
+            handlers.put(MessageType.PERMISSION_VERSION_REQUEST, this::handlePermissionVersionRequest);
+            handlers.put(MessageType.PERMISSION_SNAPSHOT_REQUEST, (s, m) -> sendPermissionSnapshot(s));
+        }
+
         @Override
         public void onAuthenticated(String nodeId) {
             logger.info("Follower connected: {}", nodeId);
@@ -606,95 +625,95 @@ public final class BridgeCoordinator {
 
         @Override
         public void onMessage(String sender, Message message) {
-            switch (message.type()) {
-                case MessageType.PLAYER_JOIN -> {
-                    UUID uuid = UUID.fromString(message.payload().get("uuid").getAsString());
-                    String username = message.payload().get("username").getAsString();
-                    registry.register(new GlobalPlayerRegistry.PlayerEntry(uuid, username, sender));
-                    hubServer.broadcast(Message.of(MessageType.PLAYER_JOIN, sender, message.payload()), sender);
-                    notifyListener(sender, message);
-                    postDiscord(config.discord().notifyJoinLeave(),
-                            discord -> discord.send(DiscordMessages.playerJoin(username, sender)));
-                }
-                case MessageType.PLAYER_LEAVE -> {
-                    UUID uuid = UUID.fromString(message.payload().get("uuid").getAsString());
-                    registry.remove(uuid);
-                    hubServer.broadcast(Message.of(MessageType.PLAYER_LEAVE, sender, message.payload()), sender);
-                    notifyListener(sender, message);
-                    String username = message.payload().has("username")
-                            ? message.payload().get("username").getAsString() : "?";
-                    postDiscord(config.discord().notifyJoinLeave(),
-                            discord -> discord.send(DiscordMessages.playerLeave(username, sender)));
-                }
-                case MessageType.PLAYER_LIST_FULL -> {
-                    // 再接続時の再同期: 送信ノード配下のプレイヤーを登録し、他ノードへJOINを再配信する
-                    if (message.payload().has("players") && message.payload().get("players").isJsonArray()) {
-                        for (com.google.gson.JsonElement e : message.payload().getAsJsonArray("players")) {
-                            JsonObject p = e.getAsJsonObject();
-                            UUID uuid = UUID.fromString(p.get("uuid").getAsString());
-                            String username = p.get("username").getAsString();
-                            GlobalPlayerRegistry.PlayerEntry entry =
-                                    new GlobalPlayerRegistry.PlayerEntry(uuid, username, sender);
-                            GlobalPlayerRegistry.PlayerEntry previous = registry.register(entry);
-                            if (previous == null) {
-                                JsonObject joinPayload = new JsonObject();
-                                joinPayload.addProperty("uuid", uuid.toString());
-                                joinPayload.addProperty("username", username);
-                                joinPayload.addProperty("proxyId", sender);
-                                hubServer.broadcast(Message.of(MessageType.PLAYER_JOIN, sender, joinPayload), sender);
-                            }
-                        }
+            MessageHandler handler = handlers.get(message.type());
+            if (handler != null) {
+                handler.handle(sender, message);
+            }
+        }
+
+        private void handlePlayerJoin(String sender, Message message) {
+            UUID uuid = UUID.fromString(message.payload().get("uuid").getAsString());
+            String username = message.payload().get("username").getAsString();
+            registry.register(new GlobalPlayerRegistry.PlayerEntry(uuid, username, sender));
+            hubServer.broadcast(Message.of(MessageType.PLAYER_JOIN, sender, message.payload()), sender);
+            notifyListener(sender, message);
+            postDiscord(config.discord().notifyJoinLeave(),
+                    discord -> discord.send(DiscordMessages.playerJoin(username, sender)));
+        }
+
+        private void handlePlayerLeave(String sender, Message message) {
+            UUID uuid = UUID.fromString(message.payload().get("uuid").getAsString());
+            registry.remove(uuid);
+            hubServer.broadcast(Message.of(MessageType.PLAYER_LEAVE, sender, message.payload()), sender);
+            notifyListener(sender, message);
+            String username = message.payload().has("username")
+                    ? message.payload().get("username").getAsString() : "?";
+            postDiscord(config.discord().notifyJoinLeave(),
+                    discord -> discord.send(DiscordMessages.playerLeave(username, sender)));
+        }
+
+        private void handlePlayerListFull(String sender, Message message) {
+            if (message.payload().has("players") && message.payload().get("players").isJsonArray()) {
+                for (com.google.gson.JsonElement e : message.payload().getAsJsonArray("players")) {
+                    JsonObject p = e.getAsJsonObject();
+                    UUID uuid = UUID.fromString(p.get("uuid").getAsString());
+                    String username = p.get("username").getAsString();
+                    GlobalPlayerRegistry.PlayerEntry entry =
+                            new GlobalPlayerRegistry.PlayerEntry(uuid, username, sender);
+                    GlobalPlayerRegistry.PlayerEntry previous = registry.register(entry);
+                    if (previous == null) {
+                        JsonObject joinPayload = new JsonObject();
+                        joinPayload.addProperty("uuid", uuid.toString());
+                        joinPayload.addProperty("username", username);
+                        joinPayload.addProperty("proxyId", sender);
+                        hubServer.broadcast(Message.of(MessageType.PLAYER_JOIN, sender, joinPayload), sender);
                     }
-                    // 更新後のグローバル一覧を送信ノードへ返す
-                    hubServer.sendTo(sender, Message.of(MessageType.GLOBAL_LIST_RESPONSE,
-                            BridgeCoordinator.this.nodeId, encodeRegistry()));
-                }
-                case MessageType.CHAT_MESSAGE -> {
-                    hubServer.broadcast(Message.of(MessageType.CHAT_MESSAGE, sender, message.payload()), sender);
-                    // リーダー自身のプレイヤーにも表示する
-                    chatRelay.onRemoteChat(sender,
-                            message.payload().get("username").getAsString(),
-                            message.payload().get("message").getAsString(),
-                            kanaOf(message.payload()));
-                    notifyListener(sender, message);
-                    postDiscord(config.discord().notifyChat(),
-                            discord -> discord.send(DiscordMessages.chat(
-                                    message.payload().get("username").getAsString(),
-                                    message.payload().get("message").getAsString(),
-                                    kanaOf(message.payload()))));
-                }
-                case MessageType.TRANSFER_REQUEST -> {
-                    hubServer.broadcast(Message.of(MessageType.TRANSFER_REQUEST, sender, message.payload()), sender);
-                    logger.info("Transfer request from {}: {}", sender, summarizeTransfer(message.payload()));
-                    notifyListener(sender, message);
-                }
-                case MessageType.TRANSFER_RESPONSE -> {
-                    hubServer.broadcast(Message.of(MessageType.TRANSFER_RESPONSE, sender, message.payload()), sender);
-                    logger.info("Transfer result from {}: {}", sender, summarizeTransfer(message.payload()));
-                    recordTransferTarget(message.payload());
-                    notifyListener(sender, message);
-                    postTransferResult(message.payload(), sender);
-                }
-                case MessageType.HEARTBEAT -> {
-                    // ハートビートは HubServer が最終受信時刻を更新済み。追加処理なし。
-                }
-                case MessageType.PERMISSION_UPDATE -> {
-                    // フォロワー発端の変更は、リーダーがバージョンを発行して全フォロワーへ配信する
-                    message.payload().addProperty("version", permissionVersion.incrementAndGet());
-                    hubServer.broadcast(Message.of(MessageType.PERMISSION_UPDATE, sender, message.payload()), sender);
-                    handlePermissionUpdate(message.payload());
-                    notifyListener(sender, message);
-                }
-                case MessageType.PERMISSION_VERSION_REQUEST -> {
-                    JsonObject response = new JsonObject();
-                    response.addProperty("version", permissionVersion.get());
-                    hubServer.sendTo(sender, Message.of(MessageType.PERMISSION_VERSION_RESPONSE,
-                            BridgeCoordinator.this.nodeId, response));
-                }
-                case MessageType.PERMISSION_SNAPSHOT_REQUEST -> sendPermissionSnapshot(sender);
-                default -> {
                 }
             }
+            hubServer.sendTo(sender, Message.of(MessageType.GLOBAL_LIST_RESPONSE,
+                    BridgeCoordinator.this.nodeId, encodeRegistry()));
+        }
+
+        private void handleChatMessage(String sender, Message message) {
+            hubServer.broadcast(Message.of(MessageType.CHAT_MESSAGE, sender, message.payload()), sender);
+            chatRelay.onRemoteChat(sender,
+                    message.payload().get("username").getAsString(),
+                    message.payload().get("message").getAsString(),
+                    kanaOf(message.payload()));
+            notifyListener(sender, message);
+            postDiscord(config.discord().notifyChat(),
+                    discord -> discord.send(DiscordMessages.chat(
+                            message.payload().get("username").getAsString(),
+                            message.payload().get("message").getAsString(),
+                            kanaOf(message.payload()))));
+        }
+
+        private void handleTransferRequest(String sender, Message message) {
+            hubServer.broadcast(Message.of(MessageType.TRANSFER_REQUEST, sender, message.payload()), sender);
+            logger.info("Transfer request from {}: {}", sender, summarizeTransfer(message.payload()));
+            notifyListener(sender, message);
+        }
+
+        private void handleTransferResponse(String sender, Message message) {
+            hubServer.broadcast(Message.of(MessageType.TRANSFER_RESPONSE, sender, message.payload()), sender);
+            logger.info("Transfer result from {}: {}", sender, summarizeTransfer(message.payload()));
+            recordTransferTarget(message.payload());
+            notifyListener(sender, message);
+            postTransferResult(message.payload(), sender);
+        }
+
+        private void handlePermissionUpdateMsg(String sender, Message message) {
+            message.payload().addProperty("version", permissionVersion.incrementAndGet());
+            hubServer.broadcast(Message.of(MessageType.PERMISSION_UPDATE, sender, message.payload()), sender);
+            handlePermissionUpdate(message.payload());
+            notifyListener(sender, message);
+        }
+
+        private void handlePermissionVersionRequest(String sender, Message message) {
+            JsonObject response = new JsonObject();
+            response.addProperty("version", permissionVersion.get());
+            hubServer.sendTo(sender, Message.of(MessageType.PERMISSION_VERSION_RESPONSE,
+                    BridgeCoordinator.this.nodeId, response));
         }
 
         @Override
