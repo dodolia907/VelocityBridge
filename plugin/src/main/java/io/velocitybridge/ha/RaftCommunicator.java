@@ -11,7 +11,11 @@ import io.velocitybridge.hub.payload.Payloads;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Raft の選挙における通信 (REQUEST_VOTE) を担当するクラス。
@@ -19,10 +23,12 @@ import java.util.concurrent.Executors;
  */
 public class RaftCommunicator {
 
+    private static final Logger logger = LoggerFactory.getLogger(RaftCommunicator.class);
+
     private final String nodeId;
     private final VelocityBridgeConfig config;
     private final ExecutorService executor;
-    private java.net.ServerSocket serverSocket;
+    private volatile java.net.ServerSocket serverSocket;
     private final RaftNode raftNode;
 
     public RaftCommunicator(String nodeId, VelocityBridgeConfig config, RaftNode raftNode) {
@@ -40,13 +46,14 @@ public class RaftCommunicator {
         executor.execute(() -> {
             try {
                 serverSocket = new java.net.ServerSocket(port);
+                logger.info("RaftCommunicator listening for votes on port {}", port);
                 while (!serverSocket.isClosed()) {
                     Socket socket = serverSocket.accept();
                     executor.execute(() -> handleConnection(socket));
                 }
             } catch (Exception e) {
                 if (serverSocket != null && !serverSocket.isClosed()) {
-                    // unexpected error
+                    logger.error("Unexpected error in RaftCommunicator listener socket", e);
                 }
             }
         });
@@ -59,13 +66,14 @@ public class RaftCommunicator {
             Message msg = MessageCodec.read(s.getInputStream(), cipher);
             if (msg != null && MessageType.REQUEST_VOTE.equals(msg.type())) {
                 Payloads.RequestVote voteReq = MessageCodec.decodePayload(msg.payload(), Payloads.RequestVote.class);
+                logger.debug("Received vote request from {}", voteReq.candidateId());
                 Payloads.RequestVoteResponse resp = raftNode.handleRequestVote(voteReq);
                 JsonObject payload = MessageCodec.encodePayload(resp);
                 Message respMsg = Message.of(MessageType.REQUEST_VOTE_RESPONSE, nodeId, payload);
                 MessageCodec.write(s.getOutputStream(), respMsg, cipher);
             }
         } catch (Exception e) {
-            // ignore
+            logger.debug("Error handling Raft connection", e);
         }
     }
 
@@ -99,7 +107,8 @@ public class RaftCommunicator {
                         raftNode.handleVoteResponse(resp);
                     }
                 }
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                logger.debug("Failed to request vote from {} at {}: {}", targetProxyId, targetInfo.address(), e.getMessage());
             }
         });
     }
@@ -110,6 +119,14 @@ public class RaftCommunicator {
                 serverSocket.close();
             } catch (Exception ignored) {}
         }
-        executor.shutdownNow();
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(2, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }
