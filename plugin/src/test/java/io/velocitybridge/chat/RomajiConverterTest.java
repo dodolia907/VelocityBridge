@@ -87,4 +87,10 @@ class RomajiConverterTest {
                 result.equals("吾輩は猫である。名前はまだない。") || result.contains("わがはい")
         );
     }
+
+    @Test
+    void japaneseInputBypassesConversion() {
+        String japanese = "こんにちは！吾輩は猫である。";
+        assertEquals(japanese, RomajiConverter.convertToKanji(japanese));
+    }
 }

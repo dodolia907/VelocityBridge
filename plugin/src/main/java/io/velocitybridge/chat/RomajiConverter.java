@@ -231,14 +231,31 @@ public final class RomajiConverter {
             .build();
     private static final com.google.gson.Gson GSON = new com.google.gson.Gson();
 
+    public static boolean hasRomaji(String input) {
+        if (input == null) {
+            return false;
+        }
+        for (int i = 0; i < input.length(); i++) {
+            if (isAsciiLetter(input.charAt(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * ローマ字入力をひらがなへ変換したのち、Google CGI API を使用して漢字に変換する。
+     * 入力にローマ字（英意）が含まれない場合は変換を行わず原文を返す。
      * ネットワークエラー等の場合はひらがな変換結果へフォールバックする。
      *
      * @param input ローマ字入力
-     * @return 漢字かな交じり変換結果（失敗時はひらがな変換結果）
+     * @return 漢字かな交じり変換結果（失敗時や非ローマ字入力時は原文）
      */
     public static String convertToKanji(String input) {
+        if (!hasRomaji(input)) {
+            return input;
+        }
+
         String kana = convert(input);
         if (kana.equals(input)) {
             return kana;
