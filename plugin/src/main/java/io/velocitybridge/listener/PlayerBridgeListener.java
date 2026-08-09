@@ -22,16 +22,21 @@ public final class PlayerBridgeListener {
     private final BridgeCoordinator coordinator;
     private final ChatRelay chatRelay;
     private final Set<UUID> romajiModeDisabled = ConcurrentHashMap.newKeySet();
+    private final io.velocitybridge.tab.TabListManager tabListManager;
 
-    public PlayerBridgeListener(BridgeCoordinator coordinator, ChatRelay chatRelay) {
+    public PlayerBridgeListener(BridgeCoordinator coordinator, ChatRelay chatRelay, io.velocitybridge.tab.TabListManager tabListManager) {
         this.coordinator = coordinator;
         this.chatRelay = chatRelay;
+        this.tabListManager = tabListManager;
     }
 
     @Subscribe
     public void onPostLogin(PostLoginEvent event) {
         Player player = event.getPlayer();
         coordinator.onPlayerJoin(player.getUniqueId(), player.getUsername());
+        if (tabListManager != null) {
+            tabListManager.updateAll();
+        }
     }
 
     @Subscribe

@@ -68,9 +68,10 @@ public final class VelocityBridgePlugin {
             AtomicReference<String> serverNodeId = new AtomicReference<>(null);
             coordinator = new BridgeCoordinator(proxy, config, chatRelay, serverNodeId);
 
-            PlayerBridgeListener listener = new PlayerBridgeListener(coordinator, chatRelay);
+            io.velocitybridge.tab.TabListManager tabListManager = new io.velocitybridge.tab.TabListManager(proxy, coordinator);
+            PlayerBridgeListener listener = new PlayerBridgeListener(coordinator, chatRelay, tabListManager);
             coordinator.setMessageListener((sender, payload) -> {
-                // プロキシ間メッセージは各ハンドラ内で処理済み。追加処理なし。
+                tabListManager.updateAll();
             });
 
             coordinator.start();
