@@ -15,6 +15,7 @@ import io.velocitybridge.command.VbModeCommand;
 import io.velocitybridge.command.VbProxiesCommand;
 import io.velocitybridge.config.VelocityBridgeConfig;
 import io.velocitybridge.listener.PlayerBridgeListener;
+import io.velocitybridge.listener.ServerPingListener;
 import io.velocitybridge.probe.LatencyProbe;
 import org.slf4j.Logger;
 
@@ -67,6 +68,7 @@ public final class VelocityBridgePlugin {
 
             coordinator.start();
             proxy.getEventManager().register(this, listener);
+            proxy.getEventManager().register(this, new ServerPingListener(coordinator.getRegistry()));
 
             latencyProbe = new LatencyProbe(config.proxies());
             latencyProbe.start();
