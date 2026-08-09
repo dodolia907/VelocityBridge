@@ -40,6 +40,8 @@ public final class VelocityBridgePlugin {
 
     private BridgeCoordinator coordinator;
     private LatencyProbe latencyProbe;
+    private VbProxiesCommand proxiesCommand;
+    private VbCommand vbCommand;
 
     @Inject
     public VelocityBridgePlugin(ProxyServer proxy, Logger logger, @DataDirectory Path dataDirectory) {
@@ -80,14 +82,44 @@ public final class VelocityBridgePlugin {
                                   LatencyProbe latencyProbe) {
         CommandManager commandManager = proxy.getCommandManager();
 
-        VbProxiesCommand proxiesCommand = new VbProxiesCommand(config, latencyProbe, coordinator.getRegistry());
-        VbCommand vbCommand = new VbCommand(proxy, coordinator, config, proxiesCommand);
+        proxiesCommand = new VbProxiesCommand(config, latencyProbe, coordinator.getRegistry());
+        vbCommand = new VbCommand(proxy, coordinator, config, proxiesCommand, this::reloadConfig);
         CommandMeta vbMeta = commandManager.metaBuilder("vb").plugin(this).build();
         commandManager.register(vbMeta, vbCommand);
 
         VbModeCommand vbModeCommand = new VbModeCommand(listener);
         CommandMeta modeMeta = commandManager.metaBuilder("vbmode").plugin(this).build();
         commandManager.register(modeMeta, vbModeCommand);
+    }
+
+    /**
+     * 設定を再読み込みして反映する（{@code /vb reload}）。
+     *
+     * <p>各コンポーネントへ新しい設定を配布する。再起動が必要な項目（node-id / mode /
+     * hub-port / leader-address / secret）は {@link BridgeCoordinator#reload} が警告を出す。</p>
+     *
+     * @param source コマンド実行元
+     */
+    private void reloadConfig(com.velocitypowered.api.command.CommandSource source) {
+        try {
+            VelocityBridgeConfig newConfig = VelocityBridgeConfig.load(dataDirectory, logger);
+            coordinator.reload(newConfig);
+            if (latencyProbe != null) {
+                latencyProbe.updateProxies(newConfig.proxies());
+            }
+            if (proxiesCommand != null) {
+                proxiesCommand.reloadConfig(newConfig);
+            }
+            if (vbCommand != null) {
+                vbCommand.reloadConfig(newConfig);
+            }
+            logger.info("Config reloaded via command");
+            source.sendPlainMessage("[VelocityBridge] Config reloaded. Note: node-id / mode / hub-port / "
+                    + "leader-address / secret changes require a proxy restart.");
+        } catch (Exception e) {
+            logger.error("Failed to reload config", e);
+            source.sendPlainMessage("[VelocityBridge] Reload failed: " + e.getMessage());
+        }
     }
 
     @Subscribe

@@ -30,18 +30,26 @@ public final class VbCommand implements SimpleCommand {
     private static final String PERMISSION_STATUS = "velocitybridge.status";
     private static final String PERMISSION_TRANSFER = "velocitybridge.transfer";
     private static final String PERMISSION_TRANSFER_OTHERS = "velocitybridge.transfer.others";
+    private static final String PERMISSION_RELOAD = "velocitybridge.reload";
 
     private final ProxyServer proxy;
     private final BridgeCoordinator coordinator;
-    private final VelocityBridgeConfig config;
+    private volatile VelocityBridgeConfig config;
     private final VbProxiesCommand proxiesCommand;
+    private final java.util.function.Consumer<CommandSource> reloader;
 
     public VbCommand(ProxyServer proxy, BridgeCoordinator coordinator, VelocityBridgeConfig config,
-                     VbProxiesCommand proxiesCommand) {
+                     VbProxiesCommand proxiesCommand, java.util.function.Consumer<CommandSource> reloader) {
         this.proxy = proxy;
         this.coordinator = coordinator;
         this.config = config;
         this.proxiesCommand = proxiesCommand;
+        this.reloader = reloader;
+    }
+
+    /** 設定を更新する（設定リロード用）。 */
+    public void reloadConfig(VelocityBridgeConfig config) {
+        this.config = config;
     }
 
     @Override
@@ -142,7 +150,11 @@ public final class VbCommand implements SimpleCommand {
     }
 
     private void handleReload(CommandSource source) {
-        source.sendPlainMessage("[VelocityBridge] Config reload is not supported yet. Restart the proxy to apply changes.");
+        if (!hasPermission(source, PERMISSION_RELOAD)) {
+            source.sendPlainMessage("You do not have permission to use this command.");
+            return;
+        }
+        reloader.accept(source);
     }
 
     private void handleProxies(CommandSource source) {
@@ -159,6 +171,7 @@ public final class VbCommand implements SimpleCommand {
         source.sendPlainMessage("  /vb status");
         source.sendPlainMessage("  /vb transfer <proxyId> [player]");
         source.sendPlainMessage("  /vb proxies");
+        source.sendPlainMessage("  /vb reload");
     }
 
     private boolean hasPermission(CommandSource source, String permission) {
@@ -174,11 +187,11 @@ public final class VbCommand implements SimpleCommand {
     public List<String> suggest(Invocation invocation) {
         String[] args = invocation.arguments();
         if (args.length == 0) {
-            return List.of("list", "status", "transfer", "proxies");
+            return List.of("list", "status", "transfer", "proxies", "reload");
         }
         if (args.length == 1) {
             String prefix = args[0].toLowerCase();
-            return List.of("list", "status", "transfer", "proxies").stream()
+            return List.of("list", "status", "transfer", "proxies", "reload").stream()
                     .filter(s -> s.startsWith(prefix))
                     .collect(Collectors.toList());
         }

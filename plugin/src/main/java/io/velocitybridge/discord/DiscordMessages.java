@@ -8,19 +8,20 @@ public final class DiscordMessages {
     private DiscordMessages() {
     }
 
-    /** チャットメッセージの投稿本文。 */
-    public static String chat(String username, String message) {
-        return "**" + username + "**: " + message;
+    /** チャットメッセージの投稿本文。カナ付きなら「原文 (カナ)」とする。 */
+    public static String chat(String username, String message, String kana) {
+        String body = (kana != null && !kana.isEmpty()) ? message + " (" + kana + ")" : message;
+        return username + ": " + body;
     }
 
     /** 参加通知の投稿本文。 */
     public static String playerJoin(String username, String proxyId) {
-        return ":green_circle: **" + username + "** joined (" + proxyId + ")";
+        return "**" + username + "** joined (" + proxyId + ")";
     }
 
     /** 退出通知の投稿本文。 */
     public static String playerLeave(String username, String proxyId) {
-        return ":red_circle: **" + username + "** left (" + proxyId + ")";
+        return "**" + username + "** left (" + proxyId + ")";
     }
 
     /** 転送成功の投稿本文。 */

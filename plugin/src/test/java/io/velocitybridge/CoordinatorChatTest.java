@@ -52,9 +52,9 @@ class CoordinatorChatTest {
 
         follower.onChat("Alice", "hello");
 
-        assertTrue(awaitUntil(() -> leaderChat.contains("proxy-2|Alice|hello")),
+        assertTrue(awaitUntil(() -> leaderChat.contains("proxy-2|Alice|hello|")),
                 "leader should display the follower's chat");
-        assertEquals(1, leaderChat.count("proxy-2|Alice|hello"));
+        assertEquals(1, leaderChat.count("proxy-2|Alice|hello|"));
         assertEquals(1, followerChat.count("proxy-2|Alice|hello|"),
                 "sender proxy should display the chat exactly once");
     }
@@ -65,24 +65,34 @@ class CoordinatorChatTest {
 
         leader.onChat("Bob", "hi");
 
-        assertTrue(awaitUntil(() -> followerChat.contains("proxy-1|Bob|hi")),
+        assertTrue(awaitUntil(() -> followerChat.contains("proxy-1|Bob|hi|")),
                 "follower should display the leader's chat");
         assertEquals(1, leaderChat.count("proxy-1|Bob|hi|"),
                 "leader should display its own chat exactly once");
-        assertEquals(1, followerChat.count("proxy-1|Bob|hi"));
+        assertEquals(1, followerChat.count("proxy-1|Bob|hi|"));
     }
 
     @Test
-    void localChatPassesSenderServerForBackendExclusion() throws Exception {
+    void chatKanaPropagatesAcrossNodes() throws Exception {
         startTwoNodes();
 
-        // 送信元バックエンドが除外対象として伝わること（バックエンドがローカル表示するため）
-        leader.onChat("Bob", "hi", "paper-1");
+        leader.onChat("Bob", "konnitiha", "こんにちは");
 
-        assertTrue(awaitUntil(() -> leaderChat.contains("proxy-1|Bob|hi|paper-1")),
-                "local relay should exclude the sender's backend server");
-        // 送信元プロキシは除外なしの 3 引数経路（リモート）では受けない
-        assertEquals(0, leaderChat.count("proxy-1|Bob|hi|"));
+        assertTrue(awaitUntil(() -> followerChat.contains("proxy-1|Bob|konnitiha|こんにちは")),
+                "kana should propagate to the follower");
+        assertEquals(1, leaderChat.count("proxy-1|Bob|konnitiha|こんにちは"),
+                "leader should display its own kana chat exactly once");
+    }
+
+    @Test
+    void chatWithoutKanaDisplaysPlain() throws Exception {
+        startTwoNodes();
+
+        leader.onChat("Bob", "hello");
+
+        assertTrue(awaitUntil(() -> followerChat.contains("proxy-1|Bob|hello|")),
+                "chat without kana should propagate");
+        assertEquals(0, followerChat.count("proxy-1|Bob|hello|こんにちは"));
     }
 
     @Test
@@ -131,7 +141,8 @@ class CoordinatorChatTest {
                 : new VelocityBridgeConfig("proxy-1", "leader", "", 0, "test-secret", List.of(
                         new VelocityBridgeConfig.ProxyInfo("proxy-1", "127.0.0.1:25565", "Local"),
                         new VelocityBridgeConfig.ProxyInfo("proxy-2", "127.0.0.1:25566", "Local")),
-                        new VelocityBridgeConfig.DiscordConfig(webhookUrl, "VelocityBridge", "", true, true, true));
+                        new VelocityBridgeConfig.DiscordConfig(webhookUrl, "VelocityBridge", "", true, true, true),
+                        new VelocityBridgeConfig.ChatConfig(true));
         leader = new BridgeCoordinator(null, leaderConfig, leaderChat, new AtomicReference<>());
         leader.start();
 
@@ -174,13 +185,9 @@ class CoordinatorChatTest {
         }
 
         @Override
-        public void onRemoteChat(String senderProxyId, String username, String message) {
-            calls.add(senderProxyId + "|" + username + "|" + message);
-        }
-
-        @Override
-        public void onRemoteChat(String senderProxyId, String username, String message, String excludeServer) {
-            calls.add(senderProxyId + "|" + username + "|" + message + "|" + excludeServer);
+        public void onRemoteChat(String senderProxyId, String username, String message, String kana,
+                                 java.util.UUID senderUuid) {
+            calls.add(senderProxyId + "|" + username + "|" + message + "|" + kana);
         }
 
         private boolean contains(String expected) {

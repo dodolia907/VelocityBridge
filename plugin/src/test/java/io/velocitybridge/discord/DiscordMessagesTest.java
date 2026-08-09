@@ -11,18 +11,24 @@ class DiscordMessagesTest {
 
     @Test
     void formatsChat() {
-        assertEquals("**Alice**: hello", DiscordMessages.chat("Alice", "hello"));
+        assertEquals("Alice: hello", DiscordMessages.chat("Alice", "hello", ""));
+    }
+
+    @Test
+    void formatsChatWithKana() {
+        assertEquals("Alice: konnitiha (こんにちは)",
+                DiscordMessages.chat("Alice", "konnitiha", "こんにちは"));
     }
 
     @Test
     void formatsJoin() {
-        assertEquals(":green_circle: **Alice** joined (proxy-1)",
+        assertEquals("**Alice** joined (proxy-1)",
                 DiscordMessages.playerJoin("Alice", "proxy-1"));
     }
 
     @Test
     void formatsLeave() {
-        assertEquals(":red_circle: **Alice** left (proxy-1)",
+        assertEquals("**Alice** left (proxy-1)",
                 DiscordMessages.playerLeave("Alice", "proxy-1"));
     }
 

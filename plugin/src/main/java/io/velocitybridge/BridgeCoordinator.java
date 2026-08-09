@@ -34,12 +34,12 @@ public final class BridgeCoordinator {
     private static final Logger logger = LoggerFactory.getLogger(BridgeCoordinator.class);
 
     private final ProxyServer proxy;
-    private final VelocityBridgeConfig config;
+    private volatile VelocityBridgeConfig config;
     private final GlobalPlayerRegistry registry;
     private final ChatRelay chatRelay;
     private final HubServer hubServer;
     private final HubClient hubClient;
-    private final DiscordHook discordHook;
+    private volatile DiscordHook discordHook;
     private final boolean leader;
     private final String nodeId;
 
@@ -134,6 +134,52 @@ public final class BridgeCoordinator {
     }
 
     /**
+     * 設定を再読み込みして反映できる項目を更新する。
+     *
+     * <p>反映される: Discord 連携・チャット配信（include-sender）・プロキシ定義。
+     * 反映されない（再起動が必要）: node-id / mode / hub-port / leader-address / secret。</p>
+     *
+     * @param newConfig 新しい設定
+     */
+    public synchronized void reload(VelocityBridgeConfig newConfig) {
+        if (!nodeId.equals(newConfig.nodeId())) {
+            logger.warn("node-id change requires a proxy restart; ignoring (was {}, requested {})",
+                    nodeId, newConfig.nodeId());
+        }
+        if (leader != "leader".equalsIgnoreCase(newConfig.mode())) {
+            logger.warn("mode change requires a proxy restart; ignoring (was {}, requested {})",
+                    leader ? "leader" : "follower", newConfig.mode());
+        }
+        if (hubServer != null && hubServer.getPort() != newConfig.hubPort()) {
+            logger.warn("hub-port change requires a proxy restart; ignoring (was {}, requested {})",
+                    hubServer.getPort(), newConfig.hubPort());
+        }
+        if (leader && !config.secret().equals(newConfig.secret())) {
+            logger.warn("secret change requires a proxy restart; ignoring");
+        }
+        if (!leader && !config.leaderAddress().equals(newConfig.leaderAddress())) {
+            logger.warn("leader-address change requires a proxy restart; ignoring");
+        }
+
+        VelocityBridgeConfig.DiscordConfig oldDiscord = config.discord();
+        VelocityBridgeConfig.DiscordConfig newDiscord = newConfig.discord();
+        if (leader && !oldDiscord.equals(newDiscord)) {
+            DiscordHook previous = discordHook;
+            if (previous != null) {
+                previous.close();
+            }
+            discordHook = newDiscord.enabled()
+                    ? new DiscordHook(newDiscord.webhookUrl(), newDiscord.username(), newDiscord.avatarUrl())
+                    : null;
+            logger.info("Discord webhook updated (chat={}, join-leave={}, transfer={})",
+                    newDiscord.notifyChat(), newDiscord.notifyJoinLeave(), newDiscord.notifyTransfer());
+        }
+
+        this.config = newConfig;
+        logger.info("Config reloaded (node={})", nodeId);
+    }
+
+    /**
      * プレイヤーの参加をネットワークへ通知する。
      *
      * @param uniqueId プレイヤーUUID
@@ -185,34 +231,49 @@ public final class BridgeCoordinator {
      * チャットメッセージをネットワーク全体へ配信する（テスト等の便宜用）。
      *
      * @param username 発言者
-     * @param message  メッセージ内容（変換済み）
+     * @param message  メッセージ内容（原文）
      */
     public void onChat(String username, String message) {
         onChat(username, message, "");
     }
 
     /**
-     * チャットメッセージをネットワーク全体へ配信する。
-     *
-     * <p>1.19.1+ では {@code PlayerChatEvent} を denied できないため {@code message()} で書き換え転送し、
-     * 送信元バックエンドがローカル表示する。ここでは他プレイヤーへの表示と他プロキシへの配信を行う
-     * （二重表示を避けるため送信元バックエンドのプレイヤーは除外する）。</p>
+     * チャットメッセージをネットワーク全体へ配信する（テスト等の便宜用）。
      *
      * @param username 発言者
-     * @param message  メッセージ内容（変換済み）
-     * @param senderServer 送信元のバックエンドサーバ名（ローカル表示除外対象）
+     * @param message  メッセージ内容（原文）
+     * @param kana     ローマ字変換のカナ（非空なら括弧付き表示）
      */
-    public void onChat(String username, String message, String senderServer) {
+    public void onChat(String username, String message, String kana) {
+        onChat(username, message, kana, null);
+    }
+
+    /**
+     * チャットメッセージをネットワーク全体へ配信する。
+     *
+     * <p>{@code PlayerChatEvent} は {@code denied()} でバックエンド表示を止めているため、
+     * ここで全プレイヤーへの表示と他プロキシへの配信を行う。設定 {@code chat.include-sender} が
+     * {@code true}（既定）なら送信者にも変換結果を配信する。{@code false} なら送信者自身は
+     * クライアント側で自分のメッセージを表示するためリレーから除外する。</p>
+     *
+     * @param username   発言者
+     * @param message    メッセージ内容（原文）
+     * @param kana       ローマ字変換のカナ（非空なら括弧付き表示）
+     * @param senderUuid 送信者UUID（設定が include-sender=false のときリレー配信から除外）
+     */
+    public void onChat(String username, String message, String kana, UUID senderUuid) {
         JsonObject payload = new JsonObject();
         payload.addProperty("username", username);
         payload.addProperty("message", message);
+        payload.addProperty("kana", kana);
 
-        chatRelay.onRemoteChat(nodeId, username, message, senderServer);
+        UUID relaySenderUuid = config.chat().includeSender() ? null : senderUuid;
+        chatRelay.onRemoteChat(nodeId, username, message, kana, relaySenderUuid);
 
         if (leader) {
             hubServer.broadcast(Message.of(MessageType.CHAT_MESSAGE, nodeId, payload), null);
             postDiscord(config.discord().notifyChat(),
-                    discord -> discord.send(DiscordMessages.chat(username, message)));
+                    discord -> discord.send(DiscordMessages.chat(username, message, kana)));
         } else {
             hubClient.send(Message.of(MessageType.CHAT_MESSAGE, nodeId, payload));
         }
@@ -416,12 +477,14 @@ public final class BridgeCoordinator {
                     // リーダー自身のプレイヤーにも表示する
                     chatRelay.onRemoteChat(sender,
                             message.payload().get("username").getAsString(),
-                            message.payload().get("message").getAsString());
+                            message.payload().get("message").getAsString(),
+                            kanaOf(message.payload()));
                     notifyListener(sender, message);
                     postDiscord(config.discord().notifyChat(),
                             discord -> discord.send(DiscordMessages.chat(
                                     message.payload().get("username").getAsString(),
-                                    message.payload().get("message").getAsString())));
+                                    message.payload().get("message").getAsString(),
+                                    kanaOf(message.payload()))));
                 }
                 case MessageType.TRANSFER_REQUEST -> {
                     hubServer.broadcast(Message.of(MessageType.TRANSFER_REQUEST, sender, message.payload()), sender);
@@ -511,7 +574,7 @@ public final class BridgeCoordinator {
                 case MessageType.CHAT_MESSAGE -> {
                     String username = message.payload().get("username").getAsString();
                     String text = message.payload().get("message").getAsString();
-                    chatRelay.onRemoteChat(message.sender(), username, text);
+                    chatRelay.onRemoteChat(message.sender(), username, text, kanaOf(message.payload()));
                     notifyListener(message);
                 }
                 case MessageType.TRANSFER_REQUEST -> {
@@ -564,6 +627,11 @@ public final class BridgeCoordinator {
         }
         response.add("players", array);
         return response;
+    }
+
+    /** チャットペイロードからカナを取り出す（無ければ空文字）。 */
+    private static String kanaOf(JsonObject payload) {
+        return payload.has("kana") ? payload.get("kana").getAsString() : "";
     }
 
     /** 転送関連メッセージのペイロードをログ用に要約する。 */

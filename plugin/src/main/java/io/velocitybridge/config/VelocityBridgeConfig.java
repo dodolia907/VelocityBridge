@@ -43,7 +43,8 @@ public record VelocityBridgeConfig(
         int hubPort,
         String secret,
         List<ProxyInfo> proxies,
-        DiscordConfig discord) {
+        DiscordConfig discord,
+        ChatConfig chat) {
 
     /** プロキシ1台分の定義。 */
     public record ProxyInfo(String id, String address, String region) {
@@ -59,6 +60,13 @@ public record VelocityBridgeConfig(
         }
     }
 
+    /** チャット配信の設定。 */
+    public record ChatConfig(boolean includeSender) {
+
+        /** 既定設定。 */
+        public static final ChatConfig DEFAULT = new ChatConfig(true);
+    }
+
     /**
      * Discord 連携が無効な既定設定。
      *
@@ -67,7 +75,7 @@ public record VelocityBridgeConfig(
     public VelocityBridgeConfig(String nodeId, String mode, String leaderAddress, int hubPort,
                                 String secret, List<ProxyInfo> proxies) {
         this(nodeId, mode, leaderAddress, hubPort, secret, proxies,
-                new DiscordConfig("", "VelocityBridge", "", true, true, true));
+                new DiscordConfig("", "VelocityBridge", "", true, true, true), ChatConfig.DEFAULT);
     }
 
     /** 既定の設定ファイル名。 */
@@ -118,7 +126,7 @@ public record VelocityBridgeConfig(
         }
 
         return new VelocityBridgeConfig(nodeId, mode, leaderAddress, hubPort, secret, List.copyOf(proxies),
-                loadDiscord(data));
+                loadDiscord(data), loadChat(data));
     }
 
     private static DiscordConfig loadDiscord(Map<String, Object> data) {
@@ -136,6 +144,17 @@ public record VelocityBridgeConfig(
                 asBool(discord, "notify-chat", true),
                 asBool(discord, "notify-join-leave", true),
                 asBool(discord, "notify-transfer", true));
+    }
+
+    private static ChatConfig loadChat(Map<String, Object> data) {
+        Map<String, Object> chat = new LinkedHashMap<>();
+        Object chatObj = data.get("chat");
+        if (chatObj instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                chat.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return new ChatConfig(asBool(chat, "include-sender", true));
     }
 
     private static String asString(Map<String, Object> data, String key, String defaultValue) {
@@ -203,6 +222,14 @@ public record VelocityBridgeConfig(
                   notify-chat: true
                   notify-join-leave: true
                   notify-transfer: true
+
+                # Chat relay settings.
+                # include-sender: true  -> the sender also receives the converted message
+                #                        (may show the original on their client as well).
+                # include-sender: false -> the sender is excluded (single display, but the
+                #                        converted message is not shown to them).
+                chat:
+                  include-sender: true
                 """;
         try (OutputStream out = Files.newOutputStream(configPath)) {
             out.write(content.getBytes(StandardCharsets.UTF_8));

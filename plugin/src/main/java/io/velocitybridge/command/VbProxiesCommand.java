@@ -19,7 +19,7 @@ public final class VbProxiesCommand {
 
     public static final String PERMISSION = "velocitybridge.proxies";
 
-    private final VelocityBridgeConfig config;
+    private volatile VelocityBridgeConfig config;
     private final LatencyProbe probe;
     private final GlobalPlayerRegistry registry;
 
@@ -27,6 +27,11 @@ public final class VbProxiesCommand {
         this.config = config;
         this.probe = probe;
         this.registry = registry;
+    }
+
+    /** 設定を更新する（設定リロード用）。 */
+    public void reloadConfig(VelocityBridgeConfig config) {
+        this.config = config;
     }
 
     /** 実行可能か（権限チェック）。 */

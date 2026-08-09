@@ -30,7 +30,7 @@ public final class LatencyProbe implements Closeable {
     /** 未計測・到達不能を表す値。 */
     public static final long UNREACHABLE = -1L;
 
-    private final List<VelocityBridgeConfig.ProxyInfo> proxies;
+    private volatile List<VelocityBridgeConfig.ProxyInfo> proxies;
     private final int timeoutMs;
     private final long intervalMs;
     private final Map<String, Long> rtts = new ConcurrentHashMap<>();
@@ -61,6 +61,17 @@ public final class LatencyProbe implements Closeable {
     /** 定期計測を開始する。 */
     public void start() {
         scheduler.scheduleWithFixedDelay(this::probeAll, 0, intervalMs, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * 計測対象のプロキシ一覧を更新する（設定リロード用）。
+     *
+     * @param proxies 新しいプロキシ定義
+     */
+    public void updateProxies(List<VelocityBridgeConfig.ProxyInfo> proxies) {
+        List<VelocityBridgeConfig.ProxyInfo> updated = List.copyOf(proxies);
+        this.proxies = updated;
+        rtts.keySet().removeIf(id -> updated.stream().noneMatch(p -> p.id().equals(id)));
     }
 
     /** 計測サイクルを1回実行する（テスト用に公開）。 */

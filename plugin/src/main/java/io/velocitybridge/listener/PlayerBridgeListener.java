@@ -20,7 +20,7 @@ public final class PlayerBridgeListener {
 
     private final BridgeCoordinator coordinator;
     private final ChatRelay chatRelay;
-    private final Set<UUID> romajiModePlayers = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> romajiModeDisabled = ConcurrentHashMap.newKeySet();
 
     public PlayerBridgeListener(BridgeCoordinator coordinator, ChatRelay chatRelay) {
         this.coordinator = coordinator;
@@ -37,7 +37,7 @@ public final class PlayerBridgeListener {
     public void onDisconnect(DisconnectEvent event) {
         Player player = event.getPlayer();
         coordinator.onPlayerLeave(player.getUniqueId());
-        romajiModePlayers.remove(player.getUniqueId());
+        romajiModeDisabled.remove(player.getUniqueId());
     }
 
     @Subscribe
@@ -45,30 +45,31 @@ public final class PlayerBridgeListener {
         Player player = event.getPlayer();
         String message = event.getMessage();
 
-        if (romajiModePlayers.contains(player.getUniqueId())) {
-            message = RomajiConverter.convert(message);
+        String kana = "";
+        if (!romajiModeDisabled.contains(player.getUniqueId())) {
+            String converted = RomajiConverter.convert(message);
+            if (!converted.equals(message)) {
+                kana = converted;
+            }
         }
 
-        // 1.19.1+ の署名付きチャットは denied() を返すと protocol error で蹴られるため、
-        // message() で書き換えて転送し、送信元バックエンドがローカル表示する。
-        event.setResult(PlayerChatEvent.ChatResult.message(message));
-        String senderServer = player.getCurrentServer()
-                .map(s -> s.getServerInfo().getName()).orElse("");
-        coordinator.onChat(player.getUsername(), message, senderServer);
+        // SignedVelocity-Proxy 導入済みのため denied() でバックエンド表示を抑止し、
+        // 変換結果付きのチャットは ChatRelay が表示する。
+        event.setResult(PlayerChatEvent.ChatResult.denied());
+        coordinator.onChat(player.getUsername(), message, kana, player.getUniqueId());
     }
 
-    /** ローマ字変換モードを切り替える。 */
+    /** ローマ字変換モードを切り替える。ON になった場合 true を返す。 */
     public boolean toggleRomajiMode(UUID uniqueId) {
-        if (romajiModePlayers.contains(uniqueId)) {
-            romajiModePlayers.remove(uniqueId);
-            return false;
+        if (romajiModeDisabled.remove(uniqueId)) {
+            return true;
         }
-        romajiModePlayers.add(uniqueId);
-        return true;
+        romajiModeDisabled.add(uniqueId);
+        return false;
     }
 
-    /** ローマ字変換モードの有無を返す。 */
+    /** ローマ字変換モードが有効か。 */
     public boolean isRomajiMode(UUID uniqueId) {
-        return romajiModePlayers.contains(uniqueId);
+        return !romajiModeDisabled.contains(uniqueId);
     }
 }
