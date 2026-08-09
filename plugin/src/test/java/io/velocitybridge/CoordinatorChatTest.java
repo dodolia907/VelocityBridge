@@ -87,6 +87,21 @@ class CoordinatorChatTest {
     }
 
     @Test
+    void convertedChatExcludesSenderFromRelayAndSendsConversionNotice() throws Exception {
+        startTwoNodes();
+
+        UUID sender = UUID.randomUUID();
+        leader.onChat("Bob", "konnitiha", "こんにちは", sender);
+
+        assertTrue(awaitUntil(() -> followerChat.contains("proxy-1|Bob|konnitiha|こんにちは")),
+                "converted chat should still reach other players on the follower");
+        assertEquals(1, leaderChat.count("proxy-1|Bob|konnitiha|こんにちは", sender),
+                "the sender must not receive the relayed copy (client renders it locally)");
+        assertEquals(1, leaderChat.notices(sender, "こんにちは"),
+                "the sender should receive a single conversion notice instead");
+    }
+
+    @Test
     void chatWithoutKanaDisplaysPlain() throws Exception {
         startTwoNodes();
 
@@ -237,6 +252,7 @@ class CoordinatorChatTest {
     private static final class RecordingChatRelay extends ChatRelay {
 
         private final List<String> calls = new CopyOnWriteArrayList<>();
+        private final List<String> notices = new CopyOnWriteArrayList<>();
 
         private RecordingChatRelay() {
             super(null);
@@ -245,17 +261,37 @@ class CoordinatorChatTest {
         @Override
         public void onRemoteChat(String senderProxyId, String username, String message, String kana,
                                  java.util.UUID senderUuid) {
-            calls.add(senderProxyId + "|" + username + "|" + message + "|" + kana);
+            calls.add(senderProxyId + "|" + username + "|" + message + "|" + kana + "|" + senderUuid);
+        }
+
+        @Override
+        public void sendConversionNotice(java.util.UUID senderUuid, String kana) {
+            notices.add(senderUuid + "|" + kana);
         }
 
         private boolean contains(String expected) {
-            return calls.contains(expected);
+            return calls.stream().anyMatch(c -> c.startsWith(expected + "|"));
         }
 
         private int count(String expected) {
+            return count(expected, null);
+        }
+
+        private int count(String expected, java.util.UUID senderUuid) {
+            String suffix = senderUuid == null ? "" : "|" + senderUuid;
             int n = 0;
             for (String call : calls) {
-                if (call.equals(expected)) {
+                if (call.startsWith(expected + "|") && call.endsWith(suffix)) {
+                    n++;
+                }
+            }
+            return n;
+        }
+
+        private int notices(java.util.UUID senderUuid, String kana) {
+            int n = 0;
+            for (String notice : notices) {
+                if (notice.equals(senderUuid + "|" + kana)) {
                     n++;
                 }
             }

@@ -122,6 +122,10 @@ discord:
 #                          (their client may show the original as well).
 # include-sender: false -> the sender is excluded (single display, but the
 #                          converted message is not shown to them).
+#
+# When romaji conversion is applied (kana is non-empty), the sender is always
+# excluded from the relay to avoid double display on 1.19.3+ clients, and the
+# converted kana is sent to the sender as a single notice instead.
 chat:
   include-sender: true
 ```

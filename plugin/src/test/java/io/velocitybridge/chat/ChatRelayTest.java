@@ -55,6 +55,33 @@ class ChatRelayTest {
         assertEquals(1, otherMessages.size());
     }
 
+    @Test
+    void sendsConversionNoticeOnlyToSender() {
+        UUID senderId = UUID.randomUUID();
+        List<String> senderMessages = new CopyOnWriteArrayList<>();
+        List<String> otherMessages = new CopyOnWriteArrayList<>();
+
+        Player sender = fakePlayer(senderId, senderMessages);
+        Player other = fakePlayer(UUID.randomUUID(), otherMessages);
+        ChatRelay relay = new ChatRelay(fakeProxy(List.of(sender, other)));
+
+        relay.sendConversionNotice(senderId, "こんにちは");
+
+        assertEquals(1, senderMessages.size(),
+                "the sender should receive the conversion notice");
+        assertTrue(senderMessages.get(0).contains("こんにちは"),
+                "the notice should contain the converted kana");
+        assertTrue(otherMessages.isEmpty(),
+                "other players must not receive the conversion notice");
+    }
+
+    @Test
+    void conversionNoticeFormatMatchesKanaSuffix() {
+        String notice = ChatRelay.formatConversionNotice("こんにちは").toString();
+        assertTrue(notice.contains("(" + "こんにちは" + ")"),
+                "the notice should show the kana in parentheses like the relayed suffix");
+    }
+
     private static Player fakePlayer(UUID id, List<String> received) {
         InvocationHandler handler = (proxy, method, args) -> {
             switch (method.getName()) {
@@ -84,6 +111,10 @@ class ChatRelayTest {
             switch (method.getName()) {
                 case "getAllPlayers":
                     return players;
+                case "getPlayer":
+                    return players.stream()
+                            .filter(p -> p.getUniqueId().equals(args[0]))
+                            .findFirst();
                 case "toString":
                     return "ProxyServer";
                 case "hashCode":

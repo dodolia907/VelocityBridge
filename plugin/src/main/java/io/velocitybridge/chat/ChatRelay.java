@@ -73,4 +73,31 @@ public class ChatRelay {
         }
         return base;
     }
+
+    /**
+     * 送信者へ変換結果のかなのみを単独で通知する。
+     *
+     * <p>変換されたメッセージを送信者へリレーで返すと、1.19.3+ のクライアントが自分の
+     * メッセージを最適化表示するため二重表示になる。そのため送信者はリレーから除外し、
+     * 変換結果のかなだけを別途表示して確認できるようにする。</p>
+     *
+     * @param senderUuid 送信者UUID
+     * @param kana       変換結果のかな
+     */
+    public void sendConversionNotice(UUID senderUuid, String kana) {
+        if (proxy == null || senderUuid == null) {
+            return;
+        }
+        proxy.getPlayer(senderUuid).ifPresent(p -> p.sendMessage(formatConversionNotice(kana)));
+    }
+
+    /**
+     * 変換結果のかなの単独通知コンポーネントをフォーマットする。
+     *
+     * @param kana 変換結果のかな
+     * @return 表示コンポーネント
+     */
+    public static Component formatConversionNotice(String kana) {
+        return Component.text("(" + kana + ")", NamedTextColor.GOLD);
+    }
 }

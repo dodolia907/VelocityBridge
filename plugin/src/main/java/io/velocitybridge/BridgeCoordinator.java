@@ -322,13 +322,15 @@ public final class BridgeCoordinator {
      *
      * <p>{@code PlayerChatEvent} は {@code denied()} でバックエンド表示を止めているため、
      * ここで全プレイヤーへの表示と他プロキシへの配信を行う。設定 {@code chat.include-sender} が
-     * {@code true}（既定）なら送信者にも変換結果を配信する。{@code false} なら送信者自身は
-     * クライアント側で自分のメッセージを表示するためリレーから除外する。</p>
+     * 変換が適用されたメッセージは送信者へリレーで返すと、1.19.3+ のクライアントが自分の
+     * メッセージを最適化表示するため二重表示になる。そのため変換時は送信者をリレーから除外し、
+     * 変換結果のかなのみを単独で通知する。変換されなかったメッセージは include-sender 設定に従い、
+     * {@code true}（既定）なら送信者にも配信し、{@code false} ならリレーから除外する。</p>
      *
      * @param username   発言者
      * @param message    メッセージ内容（原文）
-     * @param kana       ローマ字変換のカナ（非空なら括弧付き表示）
-     * @param senderUuid 送信者UUID（設定が include-sender=false のときリレー配信から除外）
+     * @param kana       ローマ字変換のカナ（非空なら変換済み）
+     * @param senderUuid 送信者UUID
      */
     public void onChat(String username, String message, String kana, UUID senderUuid) {
         JsonObject payload = new JsonObject();
@@ -336,8 +338,15 @@ public final class BridgeCoordinator {
         payload.addProperty("message", message);
         payload.addProperty("kana", kana);
 
-        UUID relaySenderUuid = config.chat().includeSender() ? null : senderUuid;
-        chatRelay.onRemoteChat(nodeId, username, message, kana, relaySenderUuid);
+        boolean includeSender = config.chat().includeSender();
+        boolean converted = kana != null && !kana.isEmpty();
+        if (converted && includeSender && senderUuid != null) {
+            chatRelay.onRemoteChat(nodeId, username, message, kana, senderUuid);
+            chatRelay.sendConversionNotice(senderUuid, kana);
+        } else {
+            UUID relaySenderUuid = includeSender ? null : senderUuid;
+            chatRelay.onRemoteChat(nodeId, username, message, kana, relaySenderUuid);
+        }
 
         if (leader) {
             hubServer.broadcast(Message.of(MessageType.CHAT_MESSAGE, nodeId, payload), null);
