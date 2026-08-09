@@ -47,6 +47,37 @@ class MessageCodecTest {
     }
 
     @Test
+    void encryptedStreamRoundTrip() throws IOException {
+        MessageCipher cipher = new MessageCipher("secret-key-1234");
+        JsonObject payload = new JsonObject();
+        payload.addProperty("message", "暗号化テスト");
+        Message original = Message.of(MessageType.CHAT_MESSAGE, "proxy-1", payload);
+
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        MessageCodec.write(bos, original, cipher);
+
+        Message decoded = MessageCodec.read(new ByteArrayInputStream(bos.toByteArray()), cipher);
+        assertEquals(original.type(), decoded.type());
+        assertEquals("暗号化テスト", decoded.payload().get("message").getAsString());
+    }
+
+    @Test
+    void encryptedStreamFailsWithWrongSecret() throws IOException {
+        MessageCipher cipherSender = new MessageCipher("secret-key-1234");
+        MessageCipher cipherReceiver = new MessageCipher("wrong-key-5678");
+
+        JsonObject payload = new JsonObject();
+        payload.addProperty("message", "機密データ");
+        Message original = Message.of(MessageType.CHAT_MESSAGE, "proxy-1", payload);
+
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        MessageCodec.write(bos, original, cipherSender);
+
+        org.junit.jupiter.api.Assertions.assertThrows(IOException.class, () ->
+                MessageCodec.read(new ByteArrayInputStream(bos.toByteArray()), cipherReceiver));
+    }
+
+    @Test
     void rejectsCorruptFrame() {
         org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
                 () -> MessageCodec.decode(new byte[]{0, 0, 1, 0}));

@@ -20,9 +20,15 @@ public final class AuthHandler {
     private static final String HMAC_ALGORITHM = "HmacSHA256";
 
     private final byte[] secret;
+    private final MessageCipher cipher;
 
     public AuthHandler(String secret) {
         this.secret = secret.getBytes(StandardCharsets.UTF_8);
+        this.cipher = new MessageCipher(secret);
+    }
+
+    public MessageCipher getCipher() {
+        return cipher;
     }
 
     /** ランダムな nonce（16バイト hex）を生成する。 */

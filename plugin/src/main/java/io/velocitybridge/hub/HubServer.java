@@ -178,7 +178,7 @@ public final class HubServer implements Closeable {
             InputStream input = socket.getInputStream();
             OutputStream output = socket.getOutputStream();
 
-            Message authMessage = MessageCodec.read(input);
+            Message authMessage = MessageCodec.read(input, auth.getCipher());
             if (authMessage == null || !MessageType.AUTH.equals(authMessage.type())) {
                 socket.close();
                 return;
@@ -192,7 +192,7 @@ public final class HubServer implements Closeable {
                 return;
             }
 
-            Connection connection = new Connection(nodeId, socket, input, output);
+            Connection connection = new Connection(nodeId, socket, input, output, auth.getCipher());
             Connection previous = connections.put(nodeId, connection);
             if (previous != null) {
                 previous.close();
@@ -206,7 +206,7 @@ public final class HubServer implements Closeable {
             handler.onAuthenticated(nodeId);
 
             while (!closed.get()) {
-                Message message = MessageCodec.read(input);
+                Message message = MessageCodec.read(input, auth.getCipher());
                 if (message == null) {
                     break;
                 }
@@ -267,19 +267,21 @@ public final class HubServer implements Closeable {
         private final Socket socket;
         private final InputStream input;
         private final OutputStream output;
+        private final MessageCipher cipher;
         private volatile long lastRead;
 
-        private Connection(String nodeId, Socket socket, InputStream input, OutputStream output) {
+        private Connection(String nodeId, Socket socket, InputStream input, OutputStream output, MessageCipher cipher) {
             this.nodeId = nodeId;
             this.socket = socket;
             this.input = input;
             this.output = output;
+            this.cipher = cipher;
             this.lastRead = System.currentTimeMillis();
         }
 
         /** この接続へ1フレーム書き込む。複数スレッドからの書き込みを直列化する。 */
         private synchronized void write(Message message) throws IOException {
-            MessageCodec.write(output, message);
+            MessageCodec.write(output, message, cipher);
         }
 
         private void close() {

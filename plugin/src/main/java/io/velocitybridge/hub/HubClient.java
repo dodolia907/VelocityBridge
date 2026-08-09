@@ -108,7 +108,7 @@ public final class HubClient implements Closeable {
             return false;
         }
         try {
-            MessageCodec.write(out, message);
+            MessageCodec.write(out, message, auth.getCipher());
             return true;
         } catch (IOException e) {
             return false;
@@ -161,9 +161,9 @@ public final class HubClient implements Closeable {
             authPayload.addProperty("nodeId", nodeId);
             authPayload.addProperty("nonce", nonce);
             authPayload.addProperty("mac", auth.computeMac(nodeId, nonce));
-            MessageCodec.write(out, Message.of(MessageType.AUTH, nodeId, authPayload));
+            MessageCodec.write(out, Message.of(MessageType.AUTH, nodeId, authPayload), auth.getCipher());
 
-            Message authResponse = MessageCodec.read(input);
+            Message authResponse = MessageCodec.read(input, auth.getCipher());
             if (authResponse == null || !MessageType.AUTH_OK.equals(authResponse.type())) {
                 newSocket.close();
                 return false;
@@ -174,7 +174,7 @@ public final class HubClient implements Closeable {
 
             // 読み取りループ
             while (!closed.get()) {
-                Message message = MessageCodec.read(input);
+                Message message = MessageCodec.read(input, auth.getCipher());
                 if (message == null) {
                     break;
                 }
