@@ -227,6 +227,7 @@ public final class RomajiConverter {
 
     private static final java.net.http.HttpClient HTTP_CLIENT = java.net.http.HttpClient.newBuilder()
             .connectTimeout(java.time.Duration.ofSeconds(3))
+            .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
             .build();
     private static final com.google.gson.Gson GSON = new com.google.gson.Gson();
 
@@ -245,7 +246,7 @@ public final class RomajiConverter {
 
         try {
             String encodedKana = java.net.URLEncoder.encode(kana, java.nio.charset.StandardCharsets.UTF_8);
-            String url = "https://www.google.com/transliterate?langpair=ja-Hira|ja&text=" + encodedKana;
+            String url = "http://www.google.com/transliterate?langpair=ja-Hira|ja&text=" + encodedKana;
 
             java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
                     .uri(java.net.URI.create(url))
@@ -259,17 +260,19 @@ public final class RomajiConverter {
                 com.google.gson.JsonArray root = GSON.fromJson(response.body(), com.google.gson.JsonArray.class);
                 StringBuilder kanjiResult = new StringBuilder();
                 for (com.google.gson.JsonElement element : root) {
-                    com.google.gson.JsonArray phrase = element.getAsJsonObject().getAsJsonArray();
-                    // phrase の構造: [0] = 元のひらがな文節, [1] = 変換候補の配列
-                    if (phrase.size() >= 2 && phrase.get(1).isJsonArray()) {
-                        com.google.gson.JsonArray candidates = phrase.get(1).getAsJsonArray();
-                        if (candidates.size() > 0) {
-                            kanjiResult.append(candidates.get(0).getAsString());
-                            continue;
+                    if (element.isJsonArray()) {
+                        com.google.gson.JsonArray phrase = element.getAsJsonArray();
+                        // phrase の構造: [0] = 元のひらがな文節, [1] = 変換候補の配列
+                        if (phrase.size() >= 2 && phrase.get(1).isJsonArray()) {
+                            com.google.gson.JsonArray candidates = phrase.get(1).getAsJsonArray();
+                            if (candidates.size() > 0) {
+                                kanjiResult.append(candidates.get(0).getAsString());
+                                continue;
+                            }
                         }
-                    }
-                    if (phrase.size() > 0) {
-                        kanjiResult.append(phrase.get(0).getAsString());
+                        if (phrase.size() > 0) {
+                            kanjiResult.append(phrase.get(0).getAsString());
+                        }
                     }
                 }
                 String result = kanjiResult.toString();
