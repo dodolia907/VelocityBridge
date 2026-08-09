@@ -67,6 +67,7 @@ class ChatRelayTest {
 
         relay.sendConversionNotice(senderId, "こんにちは");
 
+        awaitUntil(() -> !senderMessages.isEmpty());
         assertEquals(1, senderMessages.size(),
                 "the sender should receive the conversion notice");
         assertTrue(senderMessages.get(0).contains("こんにちは"),
@@ -80,6 +81,21 @@ class ChatRelayTest {
         String notice = ChatRelay.formatConversionNotice("こんにちは").toString();
         assertTrue(notice.contains("(" + "こんにちは" + ")"),
                 "the notice should show the kana in parentheses like the relayed suffix");
+    }
+
+    private static void awaitUntil(java.util.function.BooleanSupplier condition) {
+        long deadline = System.currentTimeMillis() + 5_000;
+        while (System.currentTimeMillis() < deadline) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
     }
 
     private static Player fakePlayer(UUID id, List<String> received) {

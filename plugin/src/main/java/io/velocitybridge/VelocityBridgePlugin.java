@@ -42,6 +42,7 @@ public final class VelocityBridgePlugin {
     private final Logger logger;
     private final Path dataDirectory;
 
+    private ChatRelay chatRelay;
     private BridgeCoordinator coordinator;
     private LatencyProbe latencyProbe;
     private VbProxiesCommand proxiesCommand;
@@ -63,6 +64,7 @@ public final class VelocityBridgePlugin {
             logger.info("VelocityBridge starting (node={}, mode={})", config.nodeId(), config.mode());
 
             ChatRelay chatRelay = new ChatRelay(proxy);
+            this.chatRelay = chatRelay;
             AtomicReference<String> serverNodeId = new AtomicReference<>(null);
             coordinator = new BridgeCoordinator(proxy, config, chatRelay, serverNodeId);
 
@@ -75,7 +77,7 @@ public final class VelocityBridgePlugin {
             proxy.getEventManager().register(this, listener);
             proxy.getEventManager().register(this, new ServerPingListener(coordinator.getRegistry()));
 
-            permissionBackend = LuckPermsBackend.tryCreate(logger);
+            permissionBackend = createPermissionBackend(logger);
             if (permissionBackend != null) {
                 permissionSync = new PermissionSync(permissionBackend, coordinator::onPermissionChange);
                 coordinator.setPermissionSync(permissionSync);
@@ -137,6 +139,34 @@ public final class VelocityBridgePlugin {
         }
     }
 
+    /**
+     * 利用可能な権限バックエンドを作成する。
+     *
+     * <p>LuckPerms は optional 依存のため、API クラスが存在しない環境ではクラスのロード自体が
+     * {@link NoClassDefFoundError} を起こす（{@link LuckPermsBackend} 内の try/catch では
+     * クラスロード前のため捕捉できない）。ここで先に存在確認してから参照することで、
+     * 未導入環境でも初期化を中断せずに無効化できる。</p>
+     *
+     * @param logger ロガー
+     * @return バックエンド（LuckPerms 未導入時は {@code null}）
+     */
+    private static PermissionBackend createPermissionBackend(Logger logger) {
+        if (!isClassPresent("net.luckperms.api.LuckPerms")) {
+            logger.info("LuckPerms not detected; cross-proxy permission sync disabled");
+            return null;
+        }
+        return LuckPermsBackend.tryCreate(logger);
+    }
+
+    private static boolean isClassPresent(String name) {
+        try {
+            Class.forName(name, false, VelocityBridgePlugin.class.getClassLoader());
+            return true;
+        } catch (ClassNotFoundException | LinkageError e) {
+            return false;
+        }
+    }
+
     @Subscribe
     public void onProxyShutdown(ProxyShutdownEvent event) {
         if (coordinator != null) {
@@ -144,6 +174,9 @@ public final class VelocityBridgePlugin {
         }
         if (latencyProbe != null) {
             latencyProbe.close();
+        }
+        if (chatRelay != null) {
+            chatRelay.close();
         }
         if (permissionBackend != null) {
             permissionBackend.close();

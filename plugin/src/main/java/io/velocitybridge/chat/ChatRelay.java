@@ -6,6 +6,9 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * チャットメッセージの配信を担う。
@@ -16,10 +19,26 @@ import java.util.UUID;
  */
 public class ChatRelay {
 
+    /**
+     * 送信者へのかな通知を送るまでの遅延（ミリ秒）。
+     *
+     * <p>1.19.3+ のクライアントはサーバー送信行を自分のメッセージより先に描画するため、
+     * 通知を即時送信するとオリジナルメッセージの上に表示されてしまう。わずかに遅延させることで
+     * オリジナルメッセージの下の行に表示する。クライアントの描画タイミングにより調整が必要な場合は
+     * この値を変更する。</p>
+     */
+    private static final long NOTICE_DELAY_MS = 200;
+
     private final ProxyServer proxy;
+    private final ScheduledExecutorService scheduler;
 
     public ChatRelay(ProxyServer proxy) {
         this.proxy = proxy;
+        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread thread = new Thread(r, "velocitybridge-chat-notice");
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 
     /**
@@ -88,7 +107,8 @@ public class ChatRelay {
         if (proxy == null || senderUuid == null) {
             return;
         }
-        proxy.getPlayer(senderUuid).ifPresent(p -> p.sendMessage(formatConversionNotice(kana)));
+        scheduler.schedule(() -> proxy.getPlayer(senderUuid)
+                .ifPresent(p -> p.sendMessage(formatConversionNotice(kana))), NOTICE_DELAY_MS, TimeUnit.MILLISECONDS);
     }
 
     /**
@@ -99,5 +119,14 @@ public class ChatRelay {
      */
     public static Component formatConversionNotice(String kana) {
         return Component.text("(" + kana + ")", NamedTextColor.GOLD);
+    }
+
+    /**
+     * 通知用スケジューラを停止する。
+     *
+     * <p>未送信の通知は破棄される。プラグインのシャットダウン時に呼び出す。</p>
+     */
+    public void close() {
+        scheduler.shutdownNow();
     }
 }
