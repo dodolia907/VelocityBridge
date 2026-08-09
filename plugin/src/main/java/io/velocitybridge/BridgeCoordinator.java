@@ -737,12 +737,26 @@ public final class BridgeCoordinator {
         }
     }
 
+    private interface FollowerMessageHandler {
+        void handle(Message message);
+    }
+
     /** フォロワー側のハブイベントハンドラ。 */
     private final class FollowerHandler implements HubClient.Handler {
         private final AtomicReference<String> serverNodeId;
+        private final Map<String, FollowerMessageHandler> handlers = new ConcurrentHashMap<>();
 
         private FollowerHandler(AtomicReference<String> serverNodeId) {
             this.serverNodeId = serverNodeId;
+            handlers.put(MessageType.GLOBAL_LIST_RESPONSE, m -> applyGlobalList(m.payload()));
+            handlers.put(MessageType.PLAYER_JOIN, this::handlePlayerJoin);
+            handlers.put(MessageType.PLAYER_LEAVE, this::handlePlayerLeave);
+            handlers.put(MessageType.CHAT_MESSAGE, this::handleChatMessage);
+            handlers.put(MessageType.TRANSFER_REQUEST, this::handleTransferRequest);
+            handlers.put(MessageType.TRANSFER_RESPONSE, this::handleTransferResponse);
+            handlers.put(MessageType.PERMISSION_UPDATE, this::handlePermissionUpdateMsg);
+            handlers.put(MessageType.PERMISSION_VERSION_RESPONSE, this::handlePermissionVersionResponse);
+            handlers.put(MessageType.PERMISSION_SNAPSHOT, m -> handlePermissionSnapshot(m.payload()));
         }
 
         @Override
@@ -773,53 +787,58 @@ public final class BridgeCoordinator {
 
         @Override
         public void onMessage(Message message) {
-            switch (message.type()) {
-                case MessageType.GLOBAL_LIST_RESPONSE -> applyGlobalList(message.payload());
-                case MessageType.PLAYER_JOIN -> {
-                    UUID uuid = UUID.fromString(message.payload().get("uuid").getAsString());
-                    String username = message.payload().get("username").getAsString();
-                    String proxyId = message.payload().get("proxyId").getAsString();
-                    registry.register(new GlobalPlayerRegistry.PlayerEntry(uuid, username, proxyId));
-                    notifyListener(message);
-                }
-                case MessageType.PLAYER_LEAVE -> {
-                    UUID uuid = UUID.fromString(message.payload().get("uuid").getAsString());
-                    registry.remove(uuid);
-                    notifyListener(message);
-                }
-                case MessageType.CHAT_MESSAGE -> {
-                    String username = message.payload().get("username").getAsString();
-                    String text = message.payload().get("message").getAsString();
-                    chatRelay.onRemoteChat(message.sender(), username, text, kanaOf(message.payload()));
-                    notifyListener(message);
-                }
-                case MessageType.TRANSFER_REQUEST -> {
-                    logger.info("Transfer request from {}: {}", nodeId, summarizeTransfer(message.payload()));
-                    notifyListener(message);
-                }
-                case MessageType.TRANSFER_RESPONSE -> {
-                    logger.info("Transfer result from {}: {}", nodeId, summarizeTransfer(message.payload()));
-                    recordTransferTarget(message.payload());
-                    notifyListener(message);
-                }
-                case MessageType.PERMISSION_UPDATE -> {
-                    handlePermissionUpdate(message.payload());
-                    if (message.payload().has("version")) {
-                        long version = message.payload().get("version").getAsLong();
-                        appliedPermissionVersion.accumulateAndGet(version, Math::max);
-                    }
-                }
-                case MessageType.PERMISSION_VERSION_RESPONSE -> {
-                    long serverVersion = message.payload().get("version").getAsLong();
-                    if (serverVersion > appliedPermissionVersion.get()) {
-                        // 適用済みより進んでいるため、フル状態を要求して再同期する
-                        hubClient.send(Message.of(MessageType.PERMISSION_SNAPSHOT_REQUEST,
-                                nodeId, MessageCodec.emptyPayload()));
-                    }
-                }
-                case MessageType.PERMISSION_SNAPSHOT -> handlePermissionSnapshot(message.payload());
-                default -> {
-                }
+            FollowerMessageHandler handler = handlers.get(message.type());
+            if (handler != null) {
+                handler.handle(message);
+            }
+        }
+
+        private void handlePlayerJoin(Message message) {
+            UUID uuid = UUID.fromString(message.payload().get("uuid").getAsString());
+            String username = message.payload().get("username").getAsString();
+            String proxyId = message.payload().get("proxyId").getAsString();
+            registry.register(new GlobalPlayerRegistry.PlayerEntry(uuid, username, proxyId));
+            notifyListener(message);
+        }
+
+        private void handlePlayerLeave(Message message) {
+            UUID uuid = UUID.fromString(message.payload().get("uuid").getAsString());
+            registry.remove(uuid);
+            notifyListener(message);
+        }
+
+        private void handleChatMessage(Message message) {
+            String username = message.payload().get("username").getAsString();
+            String text = message.payload().get("message").getAsString();
+            chatRelay.onRemoteChat(message.sender(), username, text, kanaOf(message.payload()));
+            notifyListener(message);
+        }
+
+        private void handleTransferRequest(Message message) {
+            logger.info("Transfer request from {}: {}", nodeId, summarizeTransfer(message.payload()));
+            notifyListener(message);
+        }
+
+        private void handleTransferResponse(Message message) {
+            logger.info("Transfer result from {}: {}", nodeId, summarizeTransfer(message.payload()));
+            recordTransferTarget(message.payload());
+            notifyListener(message);
+        }
+
+        private void handlePermissionUpdateMsg(Message message) {
+            handlePermissionUpdate(message.payload());
+            if (message.payload().has("version")) {
+                long version = message.payload().get("version").getAsLong();
+                appliedPermissionVersion.accumulateAndGet(version, Math::max);
+            }
+        }
+
+        private void handlePermissionVersionResponse(Message message) {
+            long serverVersion = message.payload().get("version").getAsLong();
+            if (serverVersion > appliedPermissionVersion.get()) {
+                // 適用済みより進んでいるため、フル状態を要求して再同期する
+                hubClient.send(Message.of(MessageType.PERMISSION_SNAPSHOT_REQUEST,
+                        nodeId, MessageCodec.emptyPayload()));
             }
         }
 
