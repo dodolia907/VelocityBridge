@@ -79,8 +79,8 @@ public final class VelocityBridgePlugin {
 
             permissionBackend = createPermissionBackend(logger);
             if (permissionBackend != null) {
-                permissionSync = new PermissionSync(permissionBackend, coordinator::onPermissionChange);
-                coordinator.setPermissionSync(permissionSync);
+                permissionSync = new PermissionSync(permissionBackend, coordinator.getPermissionCoordinator()::onPermissionChange);
+                coordinator.getPermissionCoordinator().setPermissionSync(permissionSync);
                 permissionSync.start();
                 logger.info("Cross-proxy permission sync enabled (LuckPerms, diff-only)");
             }

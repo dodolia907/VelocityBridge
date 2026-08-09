@@ -175,9 +175,9 @@ class CoordinatorChatTest {
         follower.getHubClient().send(
                 io.velocitybridge.hub.Message.of(io.velocitybridge.hub.MessageType.TRANSFER_RESPONSE, "proxy-2", payload));
 
-        assertTrue(awaitUntil(() -> leader.takePendingServer(uuid).equals(Optional.of("main"))),
+        assertTrue(awaitUntil(() -> leader.getTransferManager().takePendingServer(uuid).equals(Optional.of("main"))),
                 "target proxy should record the preserved server for the transferred player");
-        assertEquals(Optional.empty(), leader.takePendingServer(uuid),
+        assertEquals(Optional.empty(), leader.getTransferManager().takePendingServer(uuid),
                 "pending server should be consumed once");
     }
 
@@ -200,7 +200,7 @@ class CoordinatorChatTest {
                 io.velocitybridge.hub.Message.of(io.velocitybridge.hub.MessageType.TRANSFER_RESPONSE, "proxy-2", payload));
 
         Thread.sleep(300);
-        assertEquals(Optional.empty(), leader.takePendingServer(uuid),
+        assertEquals(Optional.empty(), leader.getTransferManager().takePendingServer(uuid),
                 "a response addressed to another proxy must not be recorded");
     }
 

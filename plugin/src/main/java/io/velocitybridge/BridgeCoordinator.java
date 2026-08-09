@@ -14,6 +14,8 @@ import io.velocitybridge.config.VelocityBridgeConfig;
 import io.velocitybridge.discord.DiscordHook;
 import io.velocitybridge.discord.DiscordMessages;
 import io.velocitybridge.discord.DiscordRelay;
+import io.velocitybridge.permission.PermissionCoordinator;
+import io.velocitybridge.TransferManager;
 import io.velocitybridge.hub.AuthHandler;
 import io.velocitybridge.hub.GlobalPlayerRegistry;
 import io.velocitybridge.hub.HubClient;
@@ -59,25 +61,14 @@ public final class BridgeCoordinator {
     private final HubServer hubServer;
     private final HubClient hubClient;
     private final DiscordRelay discordRelay;
-    private volatile PermissionSync permissionSync;
+    private final PermissionCoordinator permissionCoordinator;
+    private final TransferManager transferManager;
     private volatile boolean leader;
     private final String nodeId;
     private final io.velocitybridge.ha.RaftNode raftNode;
     private final io.velocitybridge.ha.RaftCommunicator raftCommunicator;
 
-    /** リーダーが発行する権限バージョン。 */
-    private final AtomicLong permissionVersion = new AtomicLong();
-
-    /** フォロワーが適用済みの権限バージョン。 */
-    private final AtomicLong appliedPermissionVersion = new AtomicLong();
-
-    /** 転送中プレイヤーが移動先プロキシで接続すべきサーバーの保留リスト（UUID → サーバー名）。 */
-    private final Map<UUID, PendingTransfer> pendingTransfers = new ConcurrentHashMap<>();
-
     private BiConsumer<String, JsonObject> messageListener;
-
-    /** 転送先サーバー情報の有効期限。これを過ぎると既定サーバーへ案内する。 */
-    private static final long TRANSFER_PENDING_TTL_NANOS = TimeUnit.SECONDS.toNanos(60);
 
     /**
      * @param proxy    プロキシサーバ（プレイヤーの転送に使用）
@@ -100,6 +91,8 @@ public final class BridgeCoordinator {
                 config.secret(),
                 new FollowerHandler(serverNodeId));
         this.discordRelay = new DiscordRelay(this::isLeader);
+        this.permissionCoordinator = new PermissionCoordinator(this);
+        this.transferManager = new TransferManager(this, proxy);
         VelocityBridgeConfig.DiscordConfig discord = config.discord();
         this.discordRelay.setup(discord);
 
@@ -151,55 +144,29 @@ public final class BridgeCoordinator {
         return hubServer;
     }
 
-    /** テスト等で参照するための権限バージョン（リーダー）。 */
-    long getPermissionVersion() {
-        return permissionVersion.get();
-    }
-
-    /** テスト等で参照するための適用済み権限バージョン（フォロワー）。 */
-    long getAppliedPermissionVersion() {
-        return appliedPermissionVersion.get();
-    }
-
-    /** リーダーへの接続クライアント（follower のみ）。 */
     public HubClient getHubClient() {
         return hubClient;
+    }
+    
+    public VelocityBridgeConfig getConfig() {
+        return config;
+    }
+    
+    public DiscordRelay getDiscordRelay() {
+        return discordRelay;
+    }
+    
+    public PermissionCoordinator getPermissionCoordinator() {
+        return permissionCoordinator;
+    }
+    
+    public TransferManager getTransferManager() {
+        return transferManager;
     }
 
     /** プロキシ間メッセージ受信時のリスナーを設定する。 */
     public void setMessageListener(BiConsumer<String, JsonObject> listener) {
         this.messageListener = listener;
-    }
-
-    /** 権限同期ハンドラを設定する。 */
-    public void setPermissionSync(PermissionSync permissionSync) {
-        this.permissionSync = permissionSync;
-    }
-
-    /**
-     * ローカルの権限変更の差分をネットワーク全体へ配信する。
-     *
-     * <p>発端のプロキシでは既に権限が適用済み（イベント起因）のため、他プロキシへ
-     * 差分を伝えるだけでよい。リーダーは全フォロワーへブロードキャストし、フォロワーは
-     * リーダーへ送信する（リーダーが中継する）。</p>
-     *
-     * @param change 権限変更の差分
-     */
-    public void onPermissionChange(PermissionBackend.NodeChange change) {
-        JsonObject payload = new JsonObject();
-        payload.addProperty("holderType", change.holderType());
-        payload.addProperty("holderKey", change.holderKey());
-        payload.addProperty("node", change.node());
-        payload.addProperty("add", change.add());
-        payload.addProperty("value", change.value());
-
-        if (leader) {
-            // リーダーが発端の変更は、ここでバージョンを発行して全フォロワーへ配信する
-            payload.addProperty("version", permissionVersion.incrementAndGet());
-            hubServer.broadcast(Message.of(MessageType.PERMISSION_UPDATE, nodeId, payload), null);
-        } else {
-            hubClient.send(Message.of(MessageType.PERMISSION_UPDATE, nodeId, payload));
-        }
     }
 
     /** 開始する。 */
@@ -391,65 +358,9 @@ public final class BridgeCoordinator {
         }
     }
 
-    /**
-     * プレイヤーを別プロキシへ転送する（Transfer パケット利用）。
-     *
-     * <p>対象プレイヤーはこのプロキシに接続中である必要がある。宛先プロキシのアドレスを設定から解決し、
-     * {@link Player#transferToHost(InetSocketAddress)} で転送を実行する。転送はクライアント側で
-     * 切断→再接続として処理されるため、以降のグローバルプレイヤー一覧の整合は参加/退出イベントで
-     * 維持される。</p>
-     *
-     * @param uniqueId 対象プレイヤーUUID
-     * @param targetProxyId 転送先プロキシID
-     * @param onResult 結果コールバック（成功フラグ, メッセージ）
-     */
     public void transferPlayer(UUID uniqueId, String targetProxyId,
                                java.util.function.BiConsumer<Boolean, String> onResult) {
-        VelocityBridgeConfig.ProxyInfo target = config.proxies().stream()
-                .filter(p -> p.id().equals(targetProxyId))
-                .findFirst()
-                .orElse(null);
-        if (target == null) {
-            onResult.accept(false, "Unknown proxy: " + targetProxyId);
-            return;
-        }
-        if (nodeId.equals(targetProxyId)) {
-            onResult.accept(false, "Player is already connected to proxy " + targetProxyId);
-            return;
-        }
-
-        Player player = proxy.getPlayer(uniqueId).orElse(null);
-        if (player == null) {
-            GlobalPlayerRegistry.PlayerEntry entry = findEntry(uniqueId);
-            onResult.accept(false, entry == null
-                    ? "Player is not online on this proxy."
-                    : "Player is online on proxy " + entry.proxyId() + ". Run the transfer there.");
-            return;
-        }
-        if (isOnlineOn(targetProxyId, uniqueId)) {
-            onResult.accept(false, "Player is already online on proxy " + targetProxyId);
-            return;
-        }
-
-        InetSocketAddress address = parseAddress(target.address());
-        String currentServer = player.getCurrentServer()
-                .map(ServerConnection::getServerInfo)
-                .map(ServerInfo::getName)
-                .orElse("");
-        logger.info("Transferring {} ({}) from {} to {} ({})",
-                player.getUsername(), uniqueId, nodeId, targetProxyId, target.address());
-        try {
-            player.transferToHost(address);
-        } catch (RuntimeException e) {
-            logger.warn("Transfer failed for {}: {}", uniqueId, e.toString());
-            onResult.accept(false, "Transfer failed: " + e.getMessage());
-            return;
-        }
-
-        broadcastTransferResponse(uniqueId, player.getUsername(), targetProxyId, target.address(),
-                currentServer, true, "ok");
-        onResult.accept(true, "Transferring " + player.getUsername() + " to "
-                + targetProxyId + " (" + address + ")");
+        transferManager.transferPlayer(uniqueId, targetProxyId, onResult);
     }
 
     /** グローバル一覧から指定 UUID のプレイヤーを探す。 */
@@ -472,40 +383,6 @@ public final class BridgeCoordinator {
         return false;
     }
 
-    /** 転送結果をネットワーク全体へ配信する。 */
-    private void broadcastTransferResponse(UUID uniqueId, String username, String targetProxyId,
-                                           String address, String server, boolean success, String message) {
-        JsonObject payload = new JsonObject();
-        payload.addProperty("uuid", uniqueId.toString());
-        payload.addProperty("username", username);
-        payload.addProperty("sourceProxyId", nodeId);
-        payload.addProperty("targetProxyId", targetProxyId);
-        payload.addProperty("address", address);
-        payload.addProperty("server", server);
-        payload.addProperty("success", success);
-        payload.addProperty("message", message);
-
-        Message msg = Message.of(MessageType.TRANSFER_RESPONSE, nodeId, payload);
-        if (leader) {
-            hubServer.broadcast(msg, null);
-            postTransferResult(payload, nodeId);
-        } else {
-            hubClient.send(msg);
-        }
-    }
-
-    /** 転送結果を Discord へ投稿する（リーダーのみ）。 */
-    private void postTransferResult(JsonObject payload, String sender) {
-        String username = payload.has("username") ? payload.get("username").getAsString() : "?";
-        String sourceProxyId = payload.has("sourceProxyId") ? payload.get("sourceProxyId").getAsString() : "?";
-        String targetProxyId = payload.has("targetProxyId") ? payload.get("targetProxyId").getAsString() : "?";
-        String reason = payload.has("message") ? payload.get("message").getAsString() : "";
-        boolean success = payload.has("success") && payload.get("success").getAsBoolean();
-        discordRelay.post(VelocityBridgeConfig.DiscordWebhookConfig::notifyTransfer, discord -> discord.send(success
-                ? DiscordMessages.transferSuccess(username, sourceProxyId, targetProxyId)
-                : DiscordMessages.transferFailure(username, targetProxyId, reason)));
-    }
-
     public boolean isHubConnected() {
         return leader || (hubClient != null && hubClient.isConnected());
     }
@@ -522,84 +399,6 @@ public final class BridgeCoordinator {
     private void demoteToFollower(String leaderId) {
         this.leader = false;
         logger.info("Demoted to FOLLOWER node: {} (leader={})", nodeId, leaderId);
-    }
-
-    /** 他プロキシからの権限変更の差分をローカルに適用する。 */
-    private void handlePermissionUpdate(JsonObject payload) {
-        PermissionSync sync = permissionSync;
-        if (sync == null) {
-            return;
-        }
-        sync.onRemoteChange(new PermissionBackend.NodeChange(
-                payload.get("holderType").getAsString(),
-                payload.get("holderKey").getAsString(),
-                payload.get("node").getAsString(),
-                payload.get("add").getAsBoolean(),
-                payload.get("value").getAsBoolean()));
-    }
-
-    /** 権限のフル状態をスナップショットとして要求ノードへ送信する（リーダーのみ）。 */
-    private void sendPermissionSnapshot(String target) {
-        PermissionSync sync = permissionSync;
-        if (sync == null) {
-            return;
-        }
-        sync.snapshot().whenComplete((holders, error) -> {
-            if (error != null) {
-                logger.warn("Failed to build permission snapshot for {}: {}", target, error.toString());
-                return;
-            }
-            JsonObject payload = new JsonObject();
-            payload.addProperty("version", permissionVersion.get());
-            JsonArray holdersArray = new JsonArray();
-            for (PermissionBackend.HolderSnapshot holder : holders) {
-                JsonObject holderObject = new JsonObject();
-                holderObject.addProperty("holderType", holder.holderType());
-                holderObject.addProperty("holderKey", holder.holderKey());
-                JsonArray nodesArray = new JsonArray();
-                for (PermissionBackend.NodeValue node : holder.nodes()) {
-                    JsonObject nodeObject = new JsonObject();
-                    nodeObject.addProperty("node", node.node());
-                    nodeObject.addProperty("value", node.value());
-                    nodesArray.add(nodeObject);
-                }
-                holderObject.add("nodes", nodesArray);
-                holdersArray.add(holderObject);
-            }
-            payload.add("holders", holdersArray);
-            hubServer.sendTo(target, Message.of(MessageType.PERMISSION_SNAPSHOT, nodeId, payload));
-        });
-    }
-
-    /** 権限スナップショットをローカルに適用し、適用済みバージョンを記録する（フォロワーのみ）。 */
-    private void handlePermissionSnapshot(JsonObject payload) {
-        PermissionSync sync = permissionSync;
-        if (sync == null) {
-            return;
-        }
-        List<PermissionBackend.HolderSnapshot> holders = new ArrayList<>();
-        if (payload.has("holders") && payload.get("holders").isJsonArray()) {
-            for (JsonElement element : payload.getAsJsonArray("holders")) {
-                JsonObject holderObject = element.getAsJsonObject();
-                List<PermissionBackend.NodeValue> nodes = new ArrayList<>();
-                if (holderObject.has("nodes") && holderObject.get("nodes").isJsonArray()) {
-                    for (JsonElement nodeElement : holderObject.getAsJsonArray("nodes")) {
-                        JsonObject nodeObject = nodeElement.getAsJsonObject();
-                        nodes.add(new PermissionBackend.NodeValue(
-                                nodeObject.get("node").getAsString(),
-                                nodeObject.get("value").getAsBoolean()));
-                    }
-                }
-                holders.add(new PermissionBackend.HolderSnapshot(
-                        holderObject.get("holderType").getAsString(),
-                        holderObject.get("holderKey").getAsString(),
-                        nodes));
-            }
-        }
-        sync.applySnapshot(holders);
-        if (payload.has("version")) {
-            appliedPermissionVersion.set(payload.get("version").getAsLong());
-        }
     }
 
     /** Minecraft の既定ポート。 */
@@ -640,7 +439,7 @@ public final class BridgeCoordinator {
             handlers.put(MessageType.HEARTBEAT, (s, m) -> {});
             handlers.put(MessageType.PERMISSION_UPDATE, this::handlePermissionUpdateMsg);
             handlers.put(MessageType.PERMISSION_VERSION_REQUEST, this::handlePermissionVersionRequest);
-            handlers.put(MessageType.PERMISSION_SNAPSHOT_REQUEST, (s, m) -> sendPermissionSnapshot(s));
+            handlers.put(MessageType.PERMISSION_SNAPSHOT_REQUEST, (s, m) -> permissionCoordinator.sendPermissionSnapshot(s));
         }
 
         @Override
@@ -713,28 +512,28 @@ public final class BridgeCoordinator {
 
         private void handleTransferRequest(String sender, Message message) {
             hubServer.broadcast(Message.of(MessageType.TRANSFER_REQUEST, sender, message.payload()), sender);
-            logger.info("Transfer request from {}: {}", sender, summarizeTransfer(message.payload()));
+            logger.info("Transfer request from {}: {}", sender, TransferManager.summarizeTransfer(message.payload()));
             notifyListener(sender, message);
         }
 
         private void handleTransferResponse(String sender, Message message) {
             hubServer.broadcast(Message.of(MessageType.TRANSFER_RESPONSE, sender, message.payload()), sender);
-            logger.info("Transfer result from {}: {}", sender, summarizeTransfer(message.payload()));
-            recordTransferTarget(message.payload());
+            logger.info("Transfer result from {}: {}", sender, TransferManager.summarizeTransfer(message.payload()));
+            transferManager.recordTransferTarget(message.payload());
             notifyListener(sender, message);
-            postTransferResult(message.payload(), sender);
+            transferManager.postTransferResult(message.payload(), sender);
         }
 
         private void handlePermissionUpdateMsg(String sender, Message message) {
-            message.payload().addProperty("version", permissionVersion.incrementAndGet());
+            message.payload().addProperty("version", permissionCoordinator.incrementAndGetPermissionVersion());
+            permissionCoordinator.handlePermissionUpdate(message.payload());
             hubServer.broadcast(Message.of(MessageType.PERMISSION_UPDATE, sender, message.payload()), sender);
-            handlePermissionUpdate(message.payload());
             notifyListener(sender, message);
         }
 
         private void handlePermissionVersionRequest(String sender, Message message) {
             JsonObject response = new JsonObject();
-            response.addProperty("version", permissionVersion.get());
+            response.addProperty("version", permissionCoordinator.getPermissionVersion());
             hubServer.sendTo(sender, Message.of(MessageType.PERMISSION_VERSION_RESPONSE,
                     BridgeCoordinator.this.nodeId, response));
         }
@@ -779,7 +578,7 @@ public final class BridgeCoordinator {
             handlers.put(MessageType.TRANSFER_RESPONSE, this::handleTransferResponse);
             handlers.put(MessageType.PERMISSION_UPDATE, this::handlePermissionUpdateMsg);
             handlers.put(MessageType.PERMISSION_VERSION_RESPONSE, this::handlePermissionVersionResponse);
-            handlers.put(MessageType.PERMISSION_SNAPSHOT, m -> handlePermissionSnapshot(m.payload()));
+            handlers.put(MessageType.PERMISSION_SNAPSHOT, m -> permissionCoordinator.handlePermissionSnapshot(m.payload()));
         }
 
         @Override
@@ -804,7 +603,7 @@ public final class BridgeCoordinator {
 
             // 権限の適用バージョンを問い合わせ、不足していればスナップショットで再同期する
             JsonObject versionRequest = new JsonObject();
-            versionRequest.addProperty("appliedVersion", appliedPermissionVersion.get());
+            versionRequest.addProperty("appliedVersion", permissionCoordinator.getAppliedPermissionVersion());
             hubClient.send(Message.of(MessageType.PERMISSION_VERSION_REQUEST, nodeId, versionRequest));
         }
 
@@ -835,27 +634,23 @@ public final class BridgeCoordinator {
         }
 
         private void handleTransferRequest(Message message) {
-            logger.info("Transfer request from {}: {}", nodeId, summarizeTransfer(message.payload()));
+            logger.info("Transfer request from {}: {}", nodeId, TransferManager.summarizeTransfer(message.payload()));
             notifyListener(message);
         }
 
         private void handleTransferResponse(Message message) {
-            logger.info("Transfer result from {}: {}", nodeId, summarizeTransfer(message.payload()));
-            recordTransferTarget(message.payload());
+            logger.info("Transfer result from {}: {}", nodeId, TransferManager.summarizeTransfer(message.payload()));
+            transferManager.recordTransferTarget(message.payload());
             notifyListener(message);
         }
 
         private void handlePermissionUpdateMsg(Message message) {
-            handlePermissionUpdate(message.payload());
-            if (message.payload().has("version")) {
-                long version = message.payload().get("version").getAsLong();
-                appliedPermissionVersion.accumulateAndGet(version, Math::max);
-            }
+            permissionCoordinator.handlePermissionUpdate(message.payload());
         }
 
         private void handlePermissionVersionResponse(Message message) {
             long serverVersion = message.payload().get("version").getAsLong();
-            if (serverVersion > appliedPermissionVersion.get()) {
+            if (serverVersion > permissionCoordinator.getAppliedPermissionVersion()) {
                 // 適用済みより進んでいるため、フル状態を要求して再同期する
                 hubClient.send(Message.of(MessageType.PERMISSION_SNAPSHOT_REQUEST,
                         nodeId, MessageCodec.emptyPayload()));
@@ -906,98 +701,8 @@ public final class BridgeCoordinator {
         return payload.has("kana") ? payload.get("kana").getAsString() : "";
     }
 
-    /**
-     * 転送先プロキシが、移動してくるプレイヤーの接続先サーバーを引き継ぐための保留を登録する。
-     *
-     * <p>転送元が送った {@code TRANSFER_RESPONSE} から、自ノード宛かつ成功したものだけを対象に、
-     * UUID → サーバー名を記録する。プレイヤーがこのプロキシへログインしたとき
-     * {@link #onPlayerChooseInitialServer(PlayerChooseInitialServerEvent)} がこれを消費する。</p>
-     *
-     * @param payload TRANSFER_RESPONSE のペイロード
-     */
-    private void recordTransferTarget(JsonObject payload) {
-        if (!payload.has("success") || !payload.get("success").getAsBoolean()) {
-            return;
-        }
-        String target = payload.has("targetProxyId") ? payload.get("targetProxyId").getAsString() : "";
-        if (!nodeId.equals(target)) {
-            return;
-        }
-        String server = payload.has("server") ? payload.get("server").getAsString() : "";
-        if (server.isEmpty()) {
-            return;
-        }
-        UUID uuid;
-        try {
-            uuid = UUID.fromString(payload.get("uuid").getAsString());
-        } catch (RuntimeException e) {
-            logger.warn("Malformed transfer response uuid: {}", payload.get("uuid"));
-            return;
-        }
-        pendingTransfers.put(uuid, new PendingTransfer(server, System.nanoTime()));
-        logger.info("Preserving server {} for transferred player {}", server, uuid);
-    }
-
-    /**
-     * 転送で移動してきたプレイヤーの初期接続先を、転送元と同じバックエンドサーバーにする。
-     *
-     * <p>自ノード宛の転送が保留されていれば {@link PlayerChooseInitialServerEvent} で
-     * サーバーを差し替える。保留が無い・期限切れ・対象サーバーが存在しない場合は既定の
-     * 接続先（ロビー等）へフォールバックする。</p>
-     *
-     * @param event 初期接続先選択イベント
-     */
     public void onPlayerChooseInitialServer(PlayerChooseInitialServerEvent event) {
-        Player player = event.getPlayer();
-        Optional<String> server = takePendingServer(player.getUniqueId());
-        if (server.isEmpty() || proxy == null) {
-            return;
-        }
-        Optional<RegisteredServer> target = proxy.getServer(server.get());
-        if (target.isEmpty()) {
-            logger.warn("Preserved server {} for transferred player {} not found on this proxy; "
-                    + "falling back to default", server.get(), player.getUsername());
-            return;
-        }
-        logger.info("Connecting transferred player {} to preserved server {}",
-                player.getUsername(), server.get());
-        event.setInitialServer(target.get());
+        transferManager.onPlayerChooseInitialServer(event);
     }
 
-    /**
-     * 転送で移動してきたプレイヤーの保留サーバーを取り出す（消費する）。
-     *
-     * <p>保留が無い・サーバー名が空・期限切れの場合は {@link Optional#empty()} を返す。</p>
-     *
-     * @param uniqueId プレイヤーUUID
-     * @return 保留されたサーバー名
-     */
-    Optional<String> takePendingServer(UUID uniqueId) {
-        PendingTransfer pending = pendingTransfers.remove(uniqueId);
-        if (pending == null || pending.server.isEmpty()
-                || System.nanoTime() - pending.createdAt > TRANSFER_PENDING_TTL_NANOS) {
-            return Optional.empty();
-        }
-        return Optional.of(pending.server);
-    }
-
-    /** 転送先サーバーの保留エントリ。 */
-    private static final class PendingTransfer {
-        final String server;
-        final long createdAt;
-
-        PendingTransfer(String server, long createdAt) {
-            this.server = server;
-            this.createdAt = createdAt;
-        }
-    }
-
-    /** 転送関連メッセージのペイロードをログ用に要約する。 */
-    private static String summarizeTransfer(JsonObject payload) {
-        String user = payload.has("username") ? payload.get("username").getAsString() : "?";
-        String source = payload.has("sourceProxyId") ? payload.get("sourceProxyId").getAsString() : "?";
-        String target = payload.has("targetProxyId") ? payload.get("targetProxyId").getAsString() : "?";
-        boolean success = payload.has("success") && payload.get("success").getAsBoolean();
-        return (success ? "ok " : "fail ") + user + " " + source + " -> " + target;
-    }
 }

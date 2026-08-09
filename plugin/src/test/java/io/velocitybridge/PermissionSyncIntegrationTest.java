@@ -44,12 +44,12 @@ class PermissionSyncIntegrationTest {
         // リーダーが先に権限変更を処理済み（フォロワーは古いバージョンのまま接続）
         startLeader();
         leaderBackend.apply(new PermissionBackend.NodeChange("user", "u1", "test.node", true, true));
-        leader.onPermissionChange(new PermissionBackend.NodeChange("user", "u1", "test.node", true, true));
-        assertEquals(1, leader.getPermissionVersion());
+        leader.getPermissionCoordinator().onPermissionChange(new PermissionBackend.NodeChange("user", "u1", "test.node", true, true));
+        assertEquals(1, leader.getPermissionCoordinator().getPermissionVersion());
 
         startFollower();
 
-        assertTrue(awaitUntil(() -> follower.getAppliedPermissionVersion() == 1),
+        assertTrue(awaitUntil(() -> follower.getPermissionCoordinator().getAppliedPermissionVersion() == 1),
                 "follower should detect version mismatch and apply snapshot");
         assertTrue(followerBackend.holders.containsKey("user|u1"),
                 "follower should have the node from the leader's snapshot");
@@ -64,7 +64,7 @@ class PermissionSyncIntegrationTest {
         followerBackend.fireLocal(new PermissionBackend.NodeChange("user", "u1", "local.node", true, true));
 
         assertTrue(awaitUntil(() -> leaderBackend.holders.containsKey("user|u1")
-                        && leader.getPermissionVersion() == 1),
+                        && leader.getPermissionCoordinator().getPermissionVersion() == 1),
                 "leader should receive and apply the follower's change");
         assertEquals(true, leaderBackend.holders.get("user|u1").get("local.node"));
     }
@@ -75,7 +75,7 @@ class PermissionSyncIntegrationTest {
         startFollower();
 
         // バージョン差が無ければスナップショット要求が起きない
-        assertTrue(awaitUntil(() -> follower.getAppliedPermissionVersion() == 0),
+        assertTrue(awaitUntil(() -> follower.getPermissionCoordinator().getAppliedPermissionVersion() == 0),
                 "follower should stay connected");
         Thread.sleep(500);
         assertEquals(0, followerBackend.appliedSnapshots.size(),
@@ -86,8 +86,8 @@ class PermissionSyncIntegrationTest {
         leaderBackend = new FakePermissionBackend();
         leader = new BridgeCoordinator(null,
                 config("proxy-1", "leader", "", 0), new ChatRelay(null), new AtomicReference<>());
-        PermissionSync sync = new PermissionSync(leaderBackend, leader::onPermissionChange);
-        leader.setPermissionSync(sync);
+        PermissionSync sync = new PermissionSync(leaderBackend, leader.getPermissionCoordinator()::onPermissionChange);
+        leader.getPermissionCoordinator().setPermissionSync(sync);
         sync.start();
         leader.start();
     }
@@ -100,8 +100,8 @@ class PermissionSyncIntegrationTest {
         follower = new BridgeCoordinator(null,
                 config("proxy-2", "follower", "127.0.0.1:" + hubPort, 51850),
                 new ChatRelay(null), new AtomicReference<>());
-        PermissionSync sync = new PermissionSync(followerBackend, follower::onPermissionChange);
-        follower.setPermissionSync(sync);
+        PermissionSync sync = new PermissionSync(followerBackend, follower.getPermissionCoordinator()::onPermissionChange);
+        follower.getPermissionCoordinator().setPermissionSync(sync);
         sync.start();
         follower.start();
 
